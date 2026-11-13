@@ -17,13 +17,16 @@
 <h2>1. Data we collect</h2>
 <ul>
 	<li>
+		<strong>Your {site.name} account</strong>: name, email address and password (stored only as a salted hash).
+	</li>
+	<li>
 		<strong>TikTok account data</strong> (via TikTok Login Kit): your open ID, display name and
 		avatar.
 	</li>
-	<li><strong>Access tokens</strong> issued by TikTok so we can publish on your behalf.</li>
+	<li><strong>Access and refresh tokens</strong> issued by TikTok so we can publish on your behalf, including posts you schedule.</li>
 	<li>
-		<strong>Content you upload</strong>: videos or photos, captions, hashtags, privacy and
-		interaction settings, and scheduled times.
+		<strong>Content you create</strong>: videos, captions, hashtags, privacy and interaction settings,
+		content disclosure choices and scheduled publish times.
 	</li>
 	<li><strong>Basic technical logs</strong> (e.g. request time, errors) to keep the Service running.</li>
 </ul>
@@ -31,7 +34,7 @@
 
 <h2>2. How we use it</h2>
 <ul>
-	<li>To publish content to your TikTok account when you request it.</li>
+	<li>To publish content to your TikTok account when you request it or at the time you scheduled.</li>
 	<li>To show your account and post status inside the app.</li>
 	<li>To troubleshoot problems and prevent abuse.</li>
 </ul>
@@ -45,9 +48,9 @@
 
 <h2>4. Storage and retention</h2>
 <ul>
-	<li>Uploaded media is deleted from our servers after it is successfully published, or within 30 days.</li>
-	<li>Access tokens are stored encrypted and deleted when you disconnect your account.</li>
-	<li>Account data is deleted within 30 days after you disconnect or request deletion.</li>
+	<li>Uploaded videos are stored only until they are published: they are deleted automatically once TikTok confirms the post, or when you delete the post.</li>
+	<li>TikTok tokens are stored encrypted and deleted when you disconnect TikTok in Account Settings.</li>
+	<li>Your account, posts and stored videos are deleted when your account is removed or within 30 days of a deletion request.</li>
 </ul>
 
 <h2>5. Your choices</h2>

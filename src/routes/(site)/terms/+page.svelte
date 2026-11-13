@@ -16,7 +16,8 @@
 
 <h2>1. The Service</h2>
 <p>
-	{site.name} lets you connect your TikTok account and upload, schedule and publish content to it
+	{site.name} is a workspace for planning TikTok content. You can organise posts on a kanban board and
+	calendar, connect your TikTok account, and publish videos to it right away or at a time you schedule,
 	using the TikTok Content Posting API.
 </p>
 

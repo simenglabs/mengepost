@@ -1,8 +1,8 @@
-// Edit these before submitting to TikTok review.
+// Site-wide info shown on landing, Terms, Privacy.
 export const site = {
-	name: 'AutoPost',
+	name: 'mengepost',
 	company: 'MengLabs',
-	email: 'support@example.com', // TODO: real contact email
-	url: 'https://example.com', // TODO: real domain
-	updated: 'November 13, 2026'
+	email: 'hello@menglabs.id',
+	url: 'https://mengepost.menglabs.id',
+	updated: 'November 14, 2026'
 };

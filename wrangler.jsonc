@@ -1,0 +1,25 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "autopost",
+	// Adapter writes SvelteKit's worker here; scripts/wrap-worker.js then wraps it to add the cron handler.
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"compatibility_date": "2026-10-30",
+	"compatibility_flags": ["nodejs_als"],
+	"routes": [{ "pattern": "mengepost.menglabs.id", "custom_domain": true }],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "mengepost",
+			"database_id": "a97c6e7f-eed2-470b-a36a-d2108da800b3",
+			"migrations_dir": "migrations"
+		}
+	],
+	"r2_buckets": [{ "binding": "MEDIA", "bucket_name": "mengepost-media" }],
+	// Publishes due scheduled posts and polls publish status.
+	"triggers": { "crons": ["* * * * *"] },
+	"vars": { "ORIGIN": "https://mengepost.menglabs.id" }
+}
