@@ -75,16 +75,16 @@ async function saveTokens(userId: string, t: any, profile?: { open_id: string; d
 	const refresh = now + t.refresh_expires_in * 1000;
 	if (profile) {
 		await env.DB.prepare(
-			`INSERT INTO tiktok_accounts (user_id, open_id, display_name, avatar_url, token, access_expires_at, refresh_expires_at, connected_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(user_id) DO UPDATE SET open_id = excluded.open_id, display_name = excluded.display_name,
+			`INSERT INTO social_accounts (user_id, platform, external_id, display_name, avatar_url, token, access_expires_at, refresh_expires_at, connected_at)
+			 VALUES (?, 'tiktok', ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(user_id, platform) DO UPDATE SET external_id = excluded.external_id, display_name = excluded.display_name,
 			   avatar_url = excluded.avatar_url, token = excluded.token, access_expires_at = excluded.access_expires_at,
 			   refresh_expires_at = excluded.refresh_expires_at, connected_at = excluded.connected_at`
 		)
 			.bind(userId, profile.open_id, profile.display_name, profile.avatar_url, token, access, refresh, now)
 			.run();
 	} else {
-		await env.DB.prepare('UPDATE tiktok_accounts SET token = ?, access_expires_at = ?, refresh_expires_at = ? WHERE user_id = ?')
+		await env.DB.prepare("UPDATE social_accounts SET token = ?, access_expires_at = ?, refresh_expires_at = ? WHERE user_id = ? AND platform = 'tiktok'")
 			.bind(token, access, refresh, userId)
 			.run();
 	}
@@ -103,13 +103,13 @@ export async function connectAccount(userId: string, code: string) {
 
 /** Valid access token for the user's TikTok account, refreshing it when it is about to expire. */
 export async function accessToken(userId: string) {
-	const row = await env.DB.prepare('SELECT token, access_expires_at, refresh_expires_at FROM tiktok_accounts WHERE user_id = ?')
+	const row = await env.DB.prepare("SELECT token, access_expires_at, refresh_expires_at FROM social_accounts WHERE user_id = ? AND platform = 'tiktok'")
 		.bind(userId)
-		.first<{ token: string; access_expires_at: number; refresh_expires_at: number }>();
+		.first<{ token: string; access_expires_at: number; refresh_expires_at: number | null }>();
 	if (!row) return fail('not_connected');
 	const tokens = await decrypt<Tokens>(row.token);
 	if (row.access_expires_at - 5 * 60_000 > Date.now()) return tokens.access_token;
-	if (row.refresh_expires_at < Date.now()) return fail('reconnect');
+	if (row.refresh_expires_at !== null && row.refresh_expires_at < Date.now()) return fail('reconnect');
 
 	const t = await oauth('/v2/oauth/token/', { grant_type: 'refresh_token', refresh_token: tokens.refresh_token });
 	if (!t.access_token) return fail('reconnect');
@@ -118,11 +118,11 @@ export async function accessToken(userId: string) {
 }
 
 export async function disconnectAccount(userId: string) {
-	const row = await env.DB.prepare('SELECT token FROM tiktok_accounts WHERE user_id = ?').bind(userId).first<{ token: string }>();
+	const row = await env.DB.prepare("SELECT token FROM social_accounts WHERE user_id = ? AND platform = 'tiktok'").bind(userId).first<{ token: string }>();
 	if (!row) return;
 	const { access_token } = await decrypt<Tokens>(row.token);
 	await oauth('/v2/oauth/revoke/', { token: access_token });
-	await env.DB.prepare('DELETE FROM tiktok_accounts WHERE user_id = ?').bind(userId).run();
+	await env.DB.prepare("DELETE FROM social_accounts WHERE user_id = ? AND platform = 'tiktok'").bind(userId).run();
 }
 
 export const creatorInfo = (token: string) => api<CreatorInfo>('/v2/post/publish/creator_info/query/', token, {});

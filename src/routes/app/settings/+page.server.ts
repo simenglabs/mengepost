@@ -1,22 +1,14 @@
 import { error, fail } from '@sveltejs/kit';
 import { env } from 'cloudflare:workers';
 import { createUser, hashPassword, normalizeEmail, validPassword, verifyPassword } from '#lib/server/auth.ts';
+import { listConnections } from '#lib/server/accounts.ts';
 import { disconnectAccount } from '#lib/server/tiktok.ts';
 import { disconnectAccount as disconnectYouTube } from '#lib/server/youtube.ts';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
-	const account = await env.DB.prepare(
-		'SELECT display_name, avatar_url, connected_at, refresh_expires_at FROM tiktok_accounts WHERE user_id = ?'
-	)
-		.bind(user.id)
-		.first<{ display_name: string; avatar_url: string; connected_at: number; refresh_expires_at: number }>();
-	const youtube = await env.DB.prepare(
-		"SELECT display_name, avatar_url, connected_at, refresh_expires_at FROM social_accounts WHERE user_id = ? AND platform = 'youtube'"
-	)
-		.bind(user.id)
-		.first<{ display_name: string; avatar_url: string; connected_at: number; refresh_expires_at: number | null }>();
+	const connections = await listConnections(user.id);
 	const team =
 		user.role === 'admin'
 			? (await env.DB.prepare('SELECT id, name, email, role, created_at FROM users ORDER BY created_at').all<{
@@ -27,7 +19,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 					created_at: number;
 				}>()).results
 			: [];
-	return { account, youtube, team };
+	return { // TikTok refresh tokens always expire; the null case is only for other platforms. Task 9 reworks this UI.
+		account: connections.tiktok ? { ...connections.tiktok, refresh_expires_at: connections.tiktok.refresh_expires_at ?? 0 } : null, youtube: connections.youtube ?? null, team };
 };
 
 const isUnique = (e: unknown) => e instanceof Error && e.message.includes('UNIQUE');
