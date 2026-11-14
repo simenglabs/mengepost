@@ -1,15 +1,11 @@
-import { getPost, PostError, publishPost } from '#lib/server/posts.ts';
-import { handle, requireUser } from '#lib/server/http.ts';
+import { error } from '@sveltejs/kit';
+import { requireUser } from '#lib/server/http.ts';
 import type { RequestHandler } from './$types';
 
 export const prerender = false;
 
-/** "Post now". */
+// Publishing moves to src/lib/server/publish.ts (broadcast phase 1, Task 6).
 export const POST: RequestHandler = async (event) => {
-	const user = requireUser(event);
-	return handle(async () => {
-		const post = await getPost(user.id, event.params.id);
-		if (!(await publishPost(post, ['idea', 'draft', 'scheduled', 'failed']))) throw new PostError('Already publishing.', 409);
-		return getPost(user.id, post.id);
-	});
+	requireUser(event);
+	error(501, 'Publishing is being rebuilt for multiple platforms.');
 };

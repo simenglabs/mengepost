@@ -33,7 +33,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.filter((p) => p.status === 'scheduled' && (p.scheduled_at ?? 0) >= now - 60_000)
 			.sort((a, b) => a.scheduled_at! - b.scheduled_at!)
 			.slice(0, 4),
-		attention: posts.filter((p) => p.status === 'failed' || (p.status === 'draft' && !p.video_key)).slice(0, 4),
+		attention: posts.filter((p) => p.status === 'failed' || (p.status === 'draft' && p.media.length === 0)).slice(0, 4),
 		recent: posts.slice(0, 5),
 		weeks
 	};

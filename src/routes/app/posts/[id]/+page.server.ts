@@ -1,12 +1,12 @@
 import { error } from '@sveltejs/kit';
-import type { CreatorInfo } from '#lib/posts.ts';
+import type { CreatorInfo, PostView } from '#lib/posts.ts';
 import { getPost, PostError } from '#lib/server/posts.ts';
 import { accessToken, creatorInfo, TikTokError } from '#lib/server/tiktok.ts';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, locals, url }) => {
 	const userId = locals.user!.id;
-	let post = null;
+	let post: PostView | null = null;
 	if (params.id !== 'new') {
 		try {
 			post = await getPost(userId, params.id);

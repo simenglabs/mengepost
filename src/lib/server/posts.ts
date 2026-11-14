@@ -1,7 +1,14 @@
-import { dev } from '$app/env';
 import { env } from 'cloudflare:workers';
-import { LOCKED, PRIVACY, type Post, type Status } from '#lib/posts.ts';
-import { publishStatus, TikTokError, uploadToTikTok } from './tiktok.ts';
+import { CAPS, PLATFORMS, platformLabel, effectiveCaption, type Platform } from '#lib/platforms.ts';
+import type { Media, Post, PostView, Status, Target } from '#lib/posts.ts';
+import {
+	defaultSettings,
+	editRules,
+	parseSettings,
+	readinessError,
+	type TargetSettings,
+} from '#lib/targets.ts';
+import { deleteAllMedia } from './media.ts';
 
 export class PostError extends Error {
 	constructor(
@@ -12,263 +19,271 @@ export class PostError extends Error {
 	}
 }
 
-export async function listPosts(userId: string) {
-	const { results } = await env.DB.prepare(
-		'SELECT * FROM posts WHERE user_id = ? ORDER BY updated_at DESC',
-	)
-		.bind(userId)
-		.all<Post>();
-	return results;
+export const FROZEN_MESSAGE = 'This post is already being published and cannot be edited.';
+export const LOCKED_MESSAGE = 'Part of this post is already published. Only failed platforms can be changed.';
+
+const MEDIA_COLS = 'm.id, m.post_id, m.position, m.kind, m.name, m.size, m.type, m.duration_ms';
+type TargetRow = Omit<Target, 'settings'> & { settings: string };
+
+const byPlatform = (a: Target, b: Target) => PLATFORMS.indexOf(a.platform) - PLATFORMS.indexOf(b.platform);
+
+function toTarget(row: TargetRow): Target {
+	let settings: TargetSettings = {};
+	try {
+		settings = JSON.parse(row.settings) as TargetSettings;
+	} catch {
+		// Corrupt settings read as empty; readiness checks then ask the user to fill them in.
+	}
+	return { ...row, settings };
 }
 
-export async function getPost(userId: string, id: string) {
-	const post = await env.DB.prepare(
-		'SELECT * FROM posts WHERE id = ? AND user_id = ?',
-	)
-		.bind(id, userId)
-		.first<Post>();
-	if (!post) throw new PostError('Post not found', 404);
-	return post;
+function assemble(posts: Post[], media: Media[], targets: TargetRow[]): PostView[] {
+	const views = new Map<string, PostView>(posts.map((p) => [p.id, { ...p, media: [], targets: [] }]));
+	for (const m of media) views.get(m.post_id)?.media.push(m);
+	for (const t of targets) views.get(t.post_id)?.targets.push(toTarget(t));
+	for (const v of views.values()) v.targets.sort(byPlatform);
+	return [...views.values()];
 }
 
-type Patch = Partial<
-	Pick<
-		Post,
-		| 'caption'
-		| 'status'
-		| 'privacy'
-		| 'allow_comment'
-		| 'allow_duet'
-		| 'allow_stitch'
-		| 'brand_organic'
-		| 'brand_content'
-		| 'scheduled_at'
-	>
->;
+export async function listPosts(userId: string): Promise<PostView[]> {
+	const [posts, media, targets] = await env.DB.batch<any>([
+		env.DB.prepare('SELECT * FROM posts WHERE user_id = ? ORDER BY updated_at DESC').bind(userId),
+		env.DB.prepare(
+			`SELECT ${MEDIA_COLS} FROM post_media m JOIN posts p ON p.id = m.post_id WHERE p.user_id = ? ORDER BY m.post_id, m.position`,
+		).bind(userId),
+		env.DB.prepare(
+			'SELECT t.* FROM post_targets t JOIN posts p ON p.id = t.post_id WHERE p.user_id = ?',
+		).bind(userId),
+	]);
+	return assemble(posts.results as Post[], media.results as Media[], targets.results as TargetRow[]);
+}
 
-const FLAGS = [
-	'allow_comment',
-	'allow_duet',
-	'allow_stitch',
-	'brand_organic',
-	'brand_content',
-] as const;
-const USER_STATUSES: Status[] = ['idea', 'draft', 'scheduled'];
+export async function getPost(userId: string, id: string): Promise<PostView> {
+	const [posts, media, targets] = await env.DB.batch<any>([
+		env.DB.prepare('SELECT * FROM posts WHERE id = ? AND user_id = ?').bind(id, userId),
+		env.DB.prepare(`SELECT ${MEDIA_COLS} FROM post_media m WHERE m.post_id = ? ORDER BY m.position`).bind(id),
+		env.DB.prepare('SELECT * FROM post_targets WHERE post_id = ?').bind(id),
+	]);
+	const [view] = assemble(posts.results as Post[], media.results as Media[], targets.results as TargetRow[]);
+	if (!view) throw new PostError('Post not found', 404);
+	return view;
+}
+
+export type Patch = {
+	caption?: string;
+	status?: 'idea' | 'draft' | 'scheduled';
+	scheduled_at?: number | null;
+	targets?: { platform: Platform; caption: string | null; settings: unknown }[];
+};
+
+const USER_STATUSES = ['idea', 'draft', 'scheduled'] as const;
+const MAX_CAPTION = 5000; // the largest platform limit; per-platform limits are checked by platformIssue
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+	typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** Validates untrusted input into a patch. */
-export function parsePatch(input: any): Patch {
+export function parsePatch(input: unknown): Patch {
+	if (!isRecord(input)) throw new PostError('Invalid body');
 	const patch: Patch = {};
-	if (input == null || typeof input !== 'object')
-		throw new PostError('Invalid body');
 	if ('caption' in input) {
-		if (typeof input.caption !== 'string' || input.caption.length > 2200)
-			throw new PostError('Caption must be up to 2200 characters');
+		if (typeof input.caption !== 'string' || input.caption.length > MAX_CAPTION)
+			throw new PostError(`Caption must be up to ${MAX_CAPTION} characters`);
 		patch.caption = input.caption;
 	}
 	if ('status' in input) {
-		if (!USER_STATUSES.includes(input.status))
+		if (!USER_STATUSES.includes(input.status as (typeof USER_STATUSES)[number]))
 			throw new PostError('Invalid status');
-		patch.status = input.status;
+		patch.status = input.status as Patch['status'];
 	}
-	if ('privacy' in input) {
-		if (input.privacy !== null && !PRIVACY.includes(input.privacy))
-			throw new PostError('Invalid privacy');
-		patch.privacy = input.privacy;
-	}
-	for (const f of FLAGS) if (f in input) patch[f] = input[f] ? 1 : 0;
 	if ('scheduled_at' in input) {
 		if (input.scheduled_at !== null && !Number.isFinite(input.scheduled_at))
 			throw new PostError('Invalid schedule time');
-		patch.scheduled_at = input.scheduled_at;
+		patch.scheduled_at = input.scheduled_at as number | null;
+	}
+	if ('targets' in input) {
+		if (!Array.isArray(input.targets)) throw new PostError('Invalid platforms');
+		const seen = new Set<Platform>();
+		patch.targets = input.targets.map((t: unknown) => {
+			if (!isRecord(t) || !PLATFORMS.includes(t.platform as Platform) || seen.has(t.platform as Platform))
+				throw new PostError('Invalid platforms');
+			const platform = t.platform as Platform;
+			seen.add(platform);
+			const caption = t.caption ?? null;
+			if (caption !== null && (typeof caption !== 'string' || caption.length > MAX_CAPTION))
+				throw new PostError(`${platformLabel[platform]} caption must be up to ${MAX_CAPTION} characters`);
+			return { platform, caption, settings: t.settings ?? null };
+		});
 	}
 	return patch;
 }
 
-/** Rules a post must satisfy to be scheduled or published. */
-function readinessError(p: Post) {
-	if (!p.video_key) return 'Add a video first.';
-	if (!p.privacy) return 'Choose who can view this video.';
-	if (p.brand_content && p.privacy === 'SELF_ONLY')
-		return 'Branded content cannot be set to "Only me".';
-	return null;
+const isEmpty = (s: unknown) => s == null || (isRecord(s) && Object.keys(s).length === 0);
+
+/** Order-insensitive deep equality for JSON-like values. */
+function same(a: unknown, b: unknown): boolean {
+	if (isRecord(a) && isRecord(b)) {
+		const ka = Object.keys(a);
+		return ka.length === Object.keys(b).length && ka.every((k) => k in b && same(a[k], b[k]));
+	}
+	return a === b;
 }
 
-export async function createPost(userId: string, patch: Patch) {
+function cleanSettings(p: Platform, input: unknown, fallback: TargetSettings): TargetSettings {
+	if (isEmpty(input)) return fallback;
+	try {
+		return parseSettings(p, input);
+	} catch (e) {
+		throw new PostError(e instanceof Error ? e.message : 'Invalid settings');
+	}
+}
+
+export async function createPost(userId: string, patch: Patch): Promise<PostView> {
 	const now = Date.now();
 	const id = crypto.randomUUID();
-	await env.DB.prepare(
-		'INSERT INTO posts (id, user_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-	)
+	await env.DB.prepare('INSERT INTO posts (id, user_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
 		.bind(id, userId, 'idea', now, now)
 		.run();
 	// New posts start as idea; scheduling goes through the same validation as edits.
-	return updatePost(userId, id, patch);
+	try {
+		return await updatePost(userId, id, patch);
+	} catch (e) {
+		await env.DB.batch([
+			env.DB.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(id),
+			env.DB.prepare('DELETE FROM posts WHERE id = ? AND user_id = ?').bind(id, userId),
+		]);
+		throw e;
+	}
 }
 
-export async function updatePost(userId: string, id: string, patch: Patch) {
+export async function updatePost(userId: string, id: string, patch: Patch): Promise<PostView> {
 	const post = await getPost(userId, id);
-	if (LOCKED.includes(post.status))
-		throw new PostError(
-			'This post is already being published and cannot be edited.',
-			409,
-		);
+	const rules = editRules(post, post.targets);
+	if (rules.frozen) throw new PostError(FROZEN_MESSAGE, 409);
 
-	const next = { ...post, ...patch } as Post;
-	// Editing a failed post puts it back to draft unless a status was chosen.
-	if (post.status === 'failed' && !patch.status) next.status = 'draft';
+	const caption = patch.caption ?? post.caption;
+	const existing = new Map(post.targets.map((t) => [t.platform, t]));
+	const now = Date.now();
+	let status: Status = post.status;
+	let scheduledAt = patch.scheduled_at !== undefined ? patch.scheduled_at : post.scheduled_at;
+	let targets: Target[];
+	let writes: Target[];
+	let removed: Platform[] = [];
+
+	if (rules.contentLocked) {
+		const changesPost =
+			(patch.caption !== undefined && patch.caption !== post.caption) ||
+			(patch.status !== undefined && patch.status !== post.status) ||
+			(patch.scheduled_at !== undefined && patch.scheduled_at !== post.scheduled_at) ||
+			(patch.targets?.some((t) => !existing.has(t.platform)) ?? false);
+		if (changesPost) throw new PostError(LOCKED_MESSAGE, 409);
+		scheduledAt = post.scheduled_at;
+		writes = [];
+		for (const t of patch.targets ?? []) {
+			const cur = existing.get(t.platform)!;
+			const settings = cleanSettings(t.platform, t.settings, cur.settings);
+			if (cur.status === 'failed') {
+				writes.push({ ...cur, caption: t.caption, settings, updated_at: now });
+			} else if (t.caption !== cur.caption || !same(settings, cur.settings)) {
+				throw new PostError(LOCKED_MESSAGE, 409);
+			}
+		}
+		const written = new Map(writes.map((t) => [t.platform, t]));
+		targets = post.targets.map((t) => written.get(t.platform) ?? t);
+	} else {
+		// Editing a failed post puts it (and its platforms) back to draft unless a status was chosen.
+		const reset = post.status === 'failed';
+		status = patch.status ?? (reset ? 'draft' : post.status);
+		const wanted =
+			patch.targets ?? post.targets.map((t) => ({ platform: t.platform, caption: t.caption, settings: t.settings }));
+		targets = wanted.map((t) => {
+			const cur = existing.get(t.platform);
+			if (!cur && !CAPS[t.platform].available) throw new PostError(`${platformLabel[t.platform]} is coming soon.`);
+			const fallback = cur?.settings ?? defaultSettings(t.platform, effectiveCaption(caption, t.caption));
+			const settings = cleanSettings(t.platform, t.settings, fallback);
+			const base: Target = cur ?? {
+				post_id: id,
+				platform: t.platform,
+				status: 'pending',
+				caption: null,
+				settings,
+				external_id: null,
+				external_url: null,
+				fail_reason: null,
+				started_at: null,
+				published_at: null,
+				updated_at: now,
+			};
+			const next: Target = { ...base, caption: t.caption, settings, updated_at: now };
+			return reset
+				? { ...next, status: 'pending', external_id: null, external_url: null, fail_reason: null, started_at: null, published_at: null }
+				: next;
+		});
+		targets.sort(byPlatform);
+		writes = targets;
+		removed = post.targets.map((t) => t.platform).filter((p) => !targets.some((t) => t.platform === p));
+	}
+
+	const next: PostView = { ...post, caption, status, scheduled_at: scheduledAt, targets };
 	if (next.status === 'scheduled') {
 		const err =
 			readinessError(next) ??
-			(!next.scheduled_at || next.scheduled_at < Date.now() - 60_000
-				? 'Pick a future date and time.'
-				: null);
+			(!next.scheduled_at || next.scheduled_at < now - 60_000 ? 'Pick a future date and time.' : null);
 		if (err) throw new PostError(err);
 	}
-	if (next.status !== 'failed') next.fail_reason = null;
 
-	const cols = [
-		'caption',
-		'status',
-		'privacy',
-		...FLAGS,
-		'scheduled_at',
-		'fail_reason',
-	] as const;
-	await env.DB.prepare(
-		`UPDATE posts SET ${cols.map((c) => `${c} = ?`).join(', ')}, updated_at = ? WHERE id = ? AND user_id = ?`,
-	)
-		.bind(...cols.map((c) => next[c]), Date.now(), id, userId)
-		.run();
-	return getPost(userId, id);
-}
-
-export async function deletePost(userId: string, id: string) {
-	const post = await getPost(userId, id);
-	if (post.status === 'publishing')
-		throw new PostError('Wait until publishing finishes.', 409);
-	if (post.video_key) await env.MEDIA.delete(post.video_key);
-	await env.DB.prepare('DELETE FROM posts WHERE id = ? AND user_id = ?')
-		.bind(id, userId)
-		.run();
-}
-
-/** Stores the uploaded video in R2, replacing any previous one. */
-export async function attachVideo(
-	userId: string,
-	id: string,
-	body: ReadableStream,
-	meta: { name: string; type: string; size: number },
-) {
-	const post = await getPost(userId, id);
-	if (LOCKED.includes(post.status))
-		throw new PostError('This post is already being published.', 409);
-	const key = `${userId}/${id}/${crypto.randomUUID()}`;
-	// The local Vite-to-R2 bridge loses the request stream's known length.
-	// Only buffer in development; Workers keeps streaming large uploads.
-	const uploadBody = dev ? await new Response(body).arrayBuffer() : body;
-	await env.MEDIA.put(key, uploadBody, {
-		httpMetadata: { contentType: meta.type },
-	});
-	if (post.video_key) await env.MEDIA.delete(post.video_key);
-	await env.DB.prepare(
-		'UPDATE posts SET video_key = ?, video_name = ?, video_size = ?, video_type = ?, updated_at = ? WHERE id = ?',
-	)
-		.bind(key, meta.name.slice(0, 200), meta.size, meta.type, Date.now(), id)
-		.run();
-	return getPost(userId, id);
-}
-
-/**
- * Atomically claims a post (status in `from` → publishing) and uploads it to TikTok.
- * Returns false if another run already claimed it.
- */
-export async function publishPost(post: Post, from: Status[]) {
-	const err = readinessError(post);
-	if (err) throw new PostError(err);
-	const claim = await env.DB.prepare(
-		`UPDATE posts SET status = 'publishing', fail_reason = NULL, updated_at = ?
-		 WHERE id = ? AND status IN (${from.map(() => '?').join(',')})`,
-	)
-		.bind(Date.now(), post.id, ...from)
-		.run();
-	if (!claim.meta.changes) return false;
-
-	try {
-		const publishId = await uploadToTikTok(post);
-		await env.DB.prepare(
-			'UPDATE posts SET publish_id = ?, updated_at = ? WHERE id = ?',
-		)
-			.bind(publishId, Date.now(), post.id)
-			.run();
-	} catch (e) {
-		await markFailed(
-			post.id,
-			e instanceof Error ? e.message : 'Publishing failed',
+	// The post update only applies if nobody claimed the post since we read it; target writes
+	// are guarded on the post carrying this edit's timestamp, so they apply only together with it.
+	const guard = 'EXISTS (SELECT 1 FROM posts WHERE id = ? AND updated_at = ?)';
+	const statements = [
+		env.DB.prepare(
+			'UPDATE posts SET caption = ?, status = ?, scheduled_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND status = ?',
+		).bind(next.caption, next.status, next.scheduled_at, now, id, userId, post.status),
+	];
+	if (removed.length) {
+		statements.push(
+			env.DB.prepare(
+				`DELETE FROM post_targets WHERE post_id = ? AND platform IN (${removed.map(() => '?').join(',')}) AND ${guard}`,
+			).bind(id, ...removed, id, now),
 		);
-		if (!(e instanceof TikTokError)) throw e;
 	}
-	return true;
-}
-
-async function markFailed(id: string, reason: string) {
-	await env.DB.prepare(
-		"UPDATE posts SET status = 'failed', fail_reason = ?, updated_at = ? WHERE id = ?",
-	)
-		.bind(reason.slice(0, 500), Date.now(), id)
-		.run();
-}
-
-/** Polls TikTok for a publishing post. On success the video is removed from R2. */
-export async function syncStatus(post: Post) {
-	if (post.status !== 'publishing' || !post.publish_id) return post.status;
-	try {
-		const s = await publishStatus(post.user_id, post.publish_id);
-		if (s.status === 'PUBLISH_COMPLETE') {
-			if (post.video_key) await env.MEDIA.delete(post.video_key);
-			await env.DB.prepare(
-				"UPDATE posts SET status = 'published', published_at = ?, video_key = NULL, updated_at = ? WHERE id = ?",
-			)
-				.bind(Date.now(), Date.now(), post.id)
-				.run();
-			return 'published';
-		}
-		if (s.status === 'FAILED') {
-			await markFailed(
-				post.id,
-				s.fail_reason || 'TikTok could not publish this video',
-			);
-			return 'failed';
-		}
-	} catch (e) {
-		// Keep polling on transient errors; give up when the connection is gone.
-		if (
-			e instanceof TikTokError &&
-			['not_connected', 'reconnect'].includes(e.code)
-		) {
-			await markFailed(post.id, e.message);
-			return 'failed';
-		}
-		console.error('sync', post.id, e);
+	for (const t of writes) {
+		statements.push(
+			env.DB.prepare(
+				`INSERT INTO post_targets (post_id, platform, status, caption, settings, external_id, external_url, fail_reason, started_at, published_at, updated_at)
+				 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${guard}
+				 ON CONFLICT (post_id, platform) DO UPDATE SET status = excluded.status, caption = excluded.caption,
+				 settings = excluded.settings, external_id = excluded.external_id, external_url = excluded.external_url,
+				 fail_reason = excluded.fail_reason, started_at = excluded.started_at, published_at = excluded.published_at,
+				 updated_at = excluded.updated_at`,
+			).bind(
+				id,
+				t.platform,
+				t.status,
+				t.caption,
+				JSON.stringify(t.settings),
+				t.external_id,
+				t.external_url,
+				t.fail_reason,
+				t.started_at,
+				t.published_at,
+				t.updated_at,
+				id,
+				now,
+			),
+		);
 	}
-	return post.status;
+	const [claimed] = await env.DB.batch(statements);
+	if (!claimed.meta.changes) throw new PostError(FROZEN_MESSAGE, 409);
+	return getPost(userId, id);
 }
 
-/** Cron: publish due scheduled posts, then poll the ones in flight. */
-export async function runCron() {
-	const now = Date.now();
-	const { results: due } = await env.DB.prepare(
-		"SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT 5",
-	)
-		.bind(now)
-		.all<Post>();
-	let claimed = 0;
-	for (const p of due)
-		if (await publishPost(p, ['scheduled']).catch(() => false)) claimed++;
-
-	const { results: inFlight } = await env.DB.prepare(
-		"SELECT * FROM posts WHERE status = 'publishing' AND publish_id IS NOT NULL ORDER BY updated_at LIMIT 20",
-	).all<Post>();
-	for (const p of inFlight) await syncStatus(p);
-
-	return { due: due.length, claimed, polled: inFlight.length };
+export async function deletePost(userId: string, id: string): Promise<void> {
+	const post = await getPost(userId, id);
+	if (post.status === 'publishing') throw new PostError('Wait until publishing finishes.', 409);
+	await deleteAllMedia(id);
+	await env.DB.batch([
+		env.DB.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(id),
+		env.DB.prepare('DELETE FROM posts WHERE id = ? AND user_id = ?').bind(id, userId),
+	]);
 }
