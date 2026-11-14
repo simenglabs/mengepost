@@ -36,9 +36,12 @@ async function readinessCtx(v: PostView, only?: Platform[]) {
 }
 
 /**
- * Claims the post (`v.status` → publishing), re-checks readiness on the claimed state (media can change
- * up to the claim), then moves the chosen pending/failed targets to pending and processes them.
- * Returns false when someone else changed the post first.
+ * Checks readiness, then in one batch claims the post (`v.status` → publishing) and moves the chosen
+ * pending/failed targets to pending, then processes them.
+ * The claim only applies if the post is exactly as read (same status and `updated_at`; every edit and
+ * media change bumps `updated_at`), so the content checked here is the content that gets published, and
+ * targets never become pending without the post being `publishing`.
+ * Returns false when the post changed or was claimed since it was read.
  */
 async function claimAndRun(
 	v: PostView,
@@ -50,32 +53,21 @@ async function claimAndRun(
 	const err = readinessError(v, ctx, only);
 	if (err) throw new PostError(err);
 
-	const now = Date.now();
-	const claim = await env.DB.prepare(
-		`UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ? AND status = ? AND ${guard}`,
-	)
-		.bind(now, v.id, v.status, ...guardArgs)
-		.run();
+	const claimedAt = Math.max(Date.now(), v.updated_at + 1); // differs from the value read
+	const platforms = only ?? v.targets.map((t) => t.platform);
+	const [claim] = await env.DB.batch([
+		env.DB.prepare(
+			`UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ? AND status = ? AND updated_at = ?
+			 AND NOT EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status = 'publishing') AND ${guard}`,
+		).bind(claimedAt, v.id, v.status, v.updated_at, v.id, ...guardArgs),
+		env.DB.prepare(
+			`UPDATE post_targets SET status = 'pending', fail_reason = NULL, external_id = NULL, external_url = NULL,
+			 started_at = NULL, published_at = NULL, updated_at = ?
+			 WHERE post_id = ? AND status IN ('pending', 'failed') AND platform IN (${platforms.map(() => '?').join(',')})
+			 AND EXISTS (SELECT 1 FROM posts WHERE id = ? AND status = 'publishing' AND updated_at = ?)`,
+		).bind(claimedAt, v.id, ...platforms, v.id, claimedAt),
+	]);
 	if (!claim.meta.changes) return false;
-
-	// Nothing can change the post's content from here on; check what is actually being published.
-	const claimed = await getPost(v.user_id, v.id);
-	const late = readinessError(claimed, ctx, only);
-	if (late) {
-		await env.DB.prepare("UPDATE posts SET status = ?, updated_at = ? WHERE id = ? AND status = 'publishing'")
-			.bind(v.status, Date.now(), v.id)
-			.run();
-		throw new PostError(late);
-	}
-
-	const platforms = only ?? claimed.targets.map((t) => t.platform);
-	await env.DB.prepare(
-		`UPDATE post_targets SET status = 'pending', fail_reason = NULL, external_id = NULL, external_url = NULL,
-		 started_at = NULL, published_at = NULL, updated_at = ?
-		 WHERE post_id = ? AND status IN ('pending', 'failed') AND platform IN (${platforms.map(() => '?').join(',')})`,
-	)
-		.bind(Date.now(), v.id, ...platforms)
-		.run();
 
 	const ready = await getPost(v.user_id, v.id);
 	for (const t of ready.targets) if (t.status === 'pending') await processTarget(ready, t.platform);
@@ -98,6 +90,13 @@ async function setTarget(postId: string, platform: Platform, from: TargetStatus,
 	)
 		.bind(...args, Date.now(), postId, platform, from)
 		.run();
+}
+
+/** Records a platform result on an in-flight target; logs when the target was no longer `publishing`. */
+async function settle(postId: string, platform: Platform, sets: string, args: unknown[]) {
+	const res = await setTarget(postId, platform, 'publishing', sets, args);
+	if (!res.meta.changes) console.warn('target result not saved: no longer publishing', postId, platform, sets, args);
+	return res;
 }
 
 /** Sends one pending target to its platform. Only one caller can claim a target. */
@@ -123,35 +122,44 @@ export async function processTarget(v: PostView, platform: Platform): Promise<vo
 			settings: target.settings,
 		});
 		if (result.state === 'published') {
-			await setTarget(v.id, platform, 'publishing', "status = 'published', external_id = ?, external_url = ?, published_at = ?", [
+			await settle(v.id, platform, "status = 'published', external_id = ?, external_url = ?, published_at = ?", [
 				result.externalId,
 				result.url,
 				Date.now(),
 			]);
 		} else {
-			await setTarget(v.id, platform, 'publishing', 'external_id = ?', [result.externalId]);
+			await settle(v.id, platform, 'external_id = ?', [result.externalId]);
 		}
 	} catch (e) {
 		const definite = e instanceof PlatformError && e.outcome === 'failed';
 		if (!(e instanceof PlatformError)) console.error('publish', v.id, platform, e);
 		const message = e instanceof PlatformError ? e.message : unconfirmed(platform);
-		await setTarget(v.id, platform, 'publishing', 'status = ?, fail_reason = ?', [
+		await settle(v.id, platform, 'status = ?, fail_reason = ?', [
 			definite ? 'failed' : 'unknown',
 			reason(message),
 		]);
 	}
 }
 
+/** The error for a lost claim: someone else is publishing, or the post was edited since it was read. */
+export async function claimLost(userId: string, postId: string): Promise<PostError> {
+	const now = await getPost(userId, postId);
+	return now.status === 'publishing'
+		? new PostError('Already publishing.', 409)
+		: new PostError('This post just changed. Try again.', 409);
+}
+
 /** Retries the chosen failed platforms (default: all failed) of a failed post. */
 export async function retryTargets(userId: string, postId: string, platforms?: Platform[]): Promise<PostView> {
 	const v = await getPost(userId, postId);
-	if (v.status === 'publishing') throw new PostError('Already publishing.', 409);
+	if (v.status === 'publishing' || v.targets.some((t) => t.status === 'publishing'))
+		throw new PostError('Already publishing.', 409);
 	if (v.status !== 'failed') throw new PostError('Only failed posts can be retried.', 409);
 	const chosen = v.targets
 		.filter((t) => t.status === 'failed' && (!platforms || platforms.includes(t.platform)))
 		.map((t) => t.platform);
 	if (!chosen.length) throw new PostError('Nothing to retry. Only failed platforms can be sent again.');
-	if (!(await claimAndRun(v, '1 = 1', [], chosen))) throw new PostError('Already publishing.', 409);
+	if (!(await claimAndRun(v, '1 = 1', [], chosen))) throw await claimLost(userId, postId);
 	return getPost(userId, postId);
 }
 
@@ -189,27 +197,27 @@ export async function syncPost(v: PostView): Promise<{ polled: number; stale: nu
 			try {
 				const r = await adapter.poll(v.user_id, t.external_id);
 				if (r.state === 'published') {
-					await setTarget(v.id, t.platform, 'publishing', "status = 'published', external_url = COALESCE(?, external_url), published_at = ?", [
+					await settle(v.id, t.platform, "status = 'published', external_url = COALESCE(?, external_url), published_at = ?", [
 						r.url,
 						Date.now(),
 					]);
 					continue;
 				}
 				if (r.state === 'failed') {
-					await setTarget(v.id, t.platform, 'publishing', "status = 'failed', fail_reason = ?", [reason(r.reason)]);
+					await settle(v.id, t.platform, "status = 'failed', fail_reason = ?", [reason(r.reason)]);
 					continue;
 				}
 			} catch (e) {
 				if (e instanceof PlatformError && (e.code === 'not_connected' || e.code === 'reconnect')) {
 					const msg = `${e.message} Then check ${label} to see whether this was posted.`;
-					await setTarget(v.id, t.platform, 'publishing', "status = 'unknown', fail_reason = ?", [reason(msg)]);
+					await settle(v.id, t.platform, "status = 'unknown', fail_reason = ?", [reason(msg)]);
 					continue;
 				}
 				console.error('poll', v.id, t.platform, e); // transient: try again next time
 			}
 		}
 		if (staleOutcome(t, Date.now(), !!adapter?.poll) === 'unknown') {
-			const res = await setTarget(v.id, t.platform, 'publishing', "status = 'unknown', fail_reason = ?", [
+			const res = await settle(v.id, t.platform, "status = 'unknown', fail_reason = ?", [
 				unconfirmed(t.platform),
 			]);
 			if (res.meta.changes) stale++;
@@ -219,25 +227,39 @@ export async function syncPost(v: PostView): Promise<{ polled: number; stale: nu
 	return { polled, stale };
 }
 
+// Target statuses as one string, compared again in the write so it only applies to the state it was derived from.
+const TARGET_STATE =
+	"(SELECT group_concat(s, ',') FROM (SELECT platform || ':' || status AS s FROM post_targets WHERE post_id = ? ORDER BY platform))";
+const IN_FLIGHT = "EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status IN ('pending', 'publishing'))";
+
 /** Stores the post status derived from its targets; removes media once every target is published. */
 export async function refreshPostStatus(postId: string): Promise<void> {
-	const [posts, rows] = await env.DB.batch<any>([
-		env.DB.prepare('SELECT status, published_at FROM posts WHERE id = ?').bind(postId),
-		env.DB.prepare('SELECT status, published_at FROM post_targets WHERE post_id = ?').bind(postId),
-	]);
-	const post = posts.results[0] as { status: Status; published_at: number | null } | undefined;
-	if (!post) return;
-	const targets = rows.results as { status: TargetStatus; published_at: number | null }[];
-	const statuses = targets.map((t) => t.status);
-	const next = derivePostStatus(post.status, statuses);
-	const publishedAt =
-		next === 'published' ? Math.max(...targets.map((t) => t.published_at ?? 0)) || Date.now() : post.published_at;
-	if (next !== post.status || publishedAt !== post.published_at) {
-		await env.DB.prepare('UPDATE posts SET status = ?, published_at = ?, updated_at = ? WHERE id = ? AND status = ?')
-			.bind(next, publishedAt, Date.now(), postId, post.status)
-			.run();
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const [posts, rows] = await env.DB.batch<any>([
+			env.DB.prepare(`SELECT status, published_at, ${TARGET_STATE} AS state FROM posts WHERE id = ?`).bind(postId, postId),
+			env.DB.prepare('SELECT status, published_at FROM post_targets WHERE post_id = ?').bind(postId),
+		]);
+		const post = posts.results[0] as { status: Status; published_at: number | null; state: string | null } | undefined;
+		if (!post) return;
+		const targets = rows.results as { status: TargetStatus; published_at: number | null }[];
+		const statuses = targets.map((t) => t.status);
+		const next = derivePostStatus(post.status, statuses);
+		const publishedAt =
+			next === 'published' ? Math.max(...targets.map((t) => t.published_at ?? 0)) || Date.now() : post.published_at;
+		if (next !== post.status || publishedAt !== post.published_at) {
+			// Never leave `publishing` while a target is still pending or in flight.
+			const res = await env.DB.prepare(
+				`UPDATE posts SET status = ?, published_at = ?, updated_at = ?
+				 WHERE id = ? AND status = ? AND ${TARGET_STATE} IS ? AND (? = 'publishing' OR NOT ${IN_FLIGHT})`,
+			)
+				.bind(next, publishedAt, Date.now(), postId, post.status, postId, post.state, next, postId)
+				.run();
+			if (!res.meta.changes) continue; // the post or its targets changed meanwhile: derive again
+		}
+		if (shouldDeleteMedia(statuses)) await deleteAllMedia(postId);
+		return;
 	}
-	if (shouldDeleteMedia(statuses)) await deleteAllMedia(postId);
+	console.warn('post status not refreshed: kept changing', postId);
 }
 
 /** A due scheduled post that is no longer ready fails with the reason instead of being retried every minute. */

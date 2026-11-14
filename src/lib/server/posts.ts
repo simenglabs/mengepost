@@ -159,7 +159,7 @@ export async function createPost(userId: string, patch: Patch): Promise<PostView
 export async function updatePost(userId: string, id: string, patch: Patch): Promise<PostView> {
 	const post = await getPost(userId, id);
 	const rules = editRules(post, post.targets);
-	if (rules.frozen) throw new PostError(FROZEN_MESSAGE, 409);
+	if (rules.frozen || post.targets.some((t) => t.status === 'publishing')) throw new PostError(FROZEN_MESSAGE, 409);
 
 	const caption = patch.caption ?? post.caption;
 	const existing = new Map(post.targets.map((t) => [t.platform, t]));
@@ -237,8 +237,9 @@ export async function updatePost(userId: string, id: string, patch: Patch): Prom
 	const guard = 'EXISTS (SELECT 1 FROM posts WHERE id = ? AND updated_at = ?)';
 	const statements = [
 		env.DB.prepare(
-			'UPDATE posts SET caption = ?, status = ?, scheduled_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND status = ?',
-		).bind(next.caption, next.status, next.scheduled_at, now, id, userId, post.status),
+			`UPDATE posts SET caption = ?, status = ?, scheduled_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND status = ?
+			 AND NOT EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status = 'publishing')`,
+		).bind(next.caption, next.status, next.scheduled_at, now, id, userId, post.status, id),
 	];
 	if (removed.length) {
 		statements.push(
@@ -280,13 +281,15 @@ export async function updatePost(userId: string, id: string, patch: Patch): Prom
 
 export async function deletePost(userId: string, id: string): Promise<void> {
 	const post = await getPost(userId, id);
-	if (post.status === 'publishing') throw new PostError(BUSY_MESSAGE, 409);
+	if (post.status === 'publishing' || post.targets.some((t) => t.status === 'publishing'))
+		throw new PostError(BUSY_MESSAGE, 409);
 	// Every delete repeats the not-publishing condition, so a publish claim in between stops all of them.
-	const guard = "EXISTS (SELECT 1 FROM posts WHERE id = ? AND user_id = ? AND status != 'publishing')";
+	const guard = `EXISTS (SELECT 1 FROM posts WHERE id = ? AND user_id = ? AND status != 'publishing')
+		AND NOT EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status = 'publishing')`;
 	const [media, , deleted] = await env.DB.batch<{ r2_key: string }>([
-		env.DB.prepare(`DELETE FROM post_media WHERE post_id = ? AND ${guard} RETURNING r2_key`).bind(id, id, userId),
-		env.DB.prepare(`DELETE FROM post_targets WHERE post_id = ? AND ${guard}`).bind(id, id, userId),
-		env.DB.prepare("DELETE FROM posts WHERE id = ? AND user_id = ? AND status != 'publishing'").bind(id, userId),
+		env.DB.prepare(`DELETE FROM post_media WHERE post_id = ? AND ${guard} RETURNING r2_key`).bind(id, id, userId, id),
+		env.DB.prepare(`DELETE FROM post_targets WHERE post_id = ? AND ${guard}`).bind(id, id, userId, id),
+		env.DB.prepare(`DELETE FROM posts WHERE id = ? AND ${guard}`).bind(id, id, userId, id),
 	]);
 	if (!deleted.meta.changes) throw new PostError(BUSY_MESSAGE, 409);
 	if (media.results.length) await env.MEDIA.delete(media.results.map((m) => m.r2_key));

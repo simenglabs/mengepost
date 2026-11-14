@@ -18,7 +18,7 @@ const MIXED = 'A post can have one video or up to 35 images, not both.';
 async function editablePost(userId: string, postId: string) {
 	const post = await getPost(userId, postId);
 	const rules = editRules(post, post.targets);
-	if (rules.frozen) throw new PostError(FROZEN_MESSAGE, 409);
+	if (rules.frozen || post.targets.some((t) => t.status === 'publishing')) throw new PostError(FROZEN_MESSAGE, 409);
 	if (rules.contentLocked) throw new PostError(LOCKED_MESSAGE, 409);
 	return post;
 }
@@ -30,9 +30,9 @@ export async function mediaRows(postId: string) {
 	return results;
 }
 
-/** Media may still change: the post is not claimed for publishing and nothing is published or awaiting a check. */
+/** Media may still change: the post is not claimed for publishing, no platform is in flight, and nothing is published or awaiting a check. */
 const EDITABLE = `EXISTS (SELECT 1 FROM posts WHERE id = ? AND status NOT IN ('publishing', 'published'))
-	AND NOT EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status IN ('published', 'unknown'))`;
+	AND NOT EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status IN ('publishing', 'published', 'unknown'))`;
 /** Bumps the post while EDITABLE. */
 const touch = (postId: string) =>
 	env.DB.prepare(`UPDATE posts SET updated_at = ? WHERE id = ? AND ${EDITABLE}`).bind(Date.now(), postId, postId, postId);
