@@ -2,6 +2,7 @@ import { error, fail } from '@sveltejs/kit';
 import { env } from 'cloudflare:workers';
 import { createUser, hashPassword, normalizeEmail, validPassword, verifyPassword } from '#lib/server/auth.ts';
 import { disconnectAccount } from '#lib/server/tiktok.ts';
+import { disconnectAccount as disconnectYouTube } from '#lib/server/youtube.ts';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -11,6 +12,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 	)
 		.bind(user.id)
 		.first<{ display_name: string; avatar_url: string; connected_at: number; refresh_expires_at: number }>();
+	const youtube = await env.DB.prepare(
+		"SELECT display_name, avatar_url, connected_at, refresh_expires_at FROM social_accounts WHERE user_id = ? AND platform = 'youtube'"
+	)
+		.bind(user.id)
+		.first<{ display_name: string; avatar_url: string; connected_at: number; refresh_expires_at: number | null }>();
 	const team =
 		user.role === 'admin'
 			? (await env.DB.prepare('SELECT id, name, email, role, created_at FROM users ORDER BY created_at').all<{
@@ -21,7 +27,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					created_at: number;
 				}>()).results
 			: [];
-	return { account, team };
+	return { account, youtube, team };
 };
 
 const isUnique = (e: unknown) => e instanceof Error && e.message.includes('UNIQUE');
@@ -60,6 +66,11 @@ export const actions: Actions = {
 		return { section: 'tiktok', ok: 'TikTok account disconnected.' };
 	},
 
+	disconnectYouTube: async ({ locals }) => {
+		await disconnectYouTube(locals.user!.id);
+		return { section: 'youtube', ok: 'YouTube channel disconnected.' };
+	},
+
 	addUser: async ({ request, locals }) => {
 		if (locals.user!.role !== 'admin') error(403, 'Admins only');
 		const form = await request.formData();
@@ -88,6 +99,7 @@ export const actions: Actions = {
 			.all<{ video_key: string }>();
 		if (results.length) await env.MEDIA.delete(results.map((r) => r.video_key));
 		await disconnectAccount(id).catch(() => {});
+		await disconnectYouTube(id).catch(() => {});
 		await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
 		return { section: 'team', ok: 'User removed.' };
 	}

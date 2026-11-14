@@ -14,9 +14,13 @@
 	let showPassword = $state(false);
 	let disconnectOpen = $state(false);
 	let disconnectForm = $state<HTMLFormElement>();
+	let ytDisconnectOpen = $state(false);
+	let ytDisconnectForm = $state<HTMLFormElement>();
 	$effect(() => {
 		const hash = page.url.hash.slice(1);
-		if (['profile', 'tiktok', 'security', 'team'].includes(hash)) tab = hash;
+		// #tiktok / #youtube come back from the OAuth callbacks.
+		if (['tiktok', 'youtube', 'connections'].includes(hash)) tab = 'connections';
+		else if (['profile', 'security', 'team'].includes(hash)) tab = hash;
 	});
 	const submit: SubmitFunction = () => {
 		pending = true;
@@ -31,6 +35,10 @@
 		page.url.searchParams.get('tiktok') === 'connected',
 	);
 	const tiktokError = $derived(page.url.searchParams.get('tiktok_error'));
+	const youtubeOk = $derived(
+		page.url.searchParams.get('youtube') === 'connected',
+	);
+	const youtubeError = $derived(page.url.searchParams.get('youtube_error'));
 	const date = (ms: number) =>
 		new Date(ms).toLocaleDateString(undefined, {
 			day: 'numeric',
@@ -49,7 +57,7 @@
 	eyebrow="Workspace settings"
 />
 <nav class="settings-tabs segmented" aria-label="Settings sections">
-	{#each [{ key: 'profile', label: 'Profile' }, { key: 'tiktok', label: 'TikTok connection' }, { key: 'security', label: 'Security' }, ...(data.user.role === 'admin' ? [{ key: 'team', label: 'Team' }] : [])] as item}<button
+	{#each [{ key: 'profile', label: 'Profile' }, { key: 'connections', label: 'Connections' }, { key: 'security', label: 'Security' }, ...(data.user.role === 'admin' ? [{ key: 'team', label: 'Team' }] : [])] as item}<button
 			class:active={tab === item.key}
 			onclick={() => (tab = item.key)}>{item.label}</button
 		>{/each}
@@ -58,7 +66,7 @@
 		Saving your changes…
 	</p>{/if}
 <div class="grid">
-	<section class="card tiktok" id="tiktok" hidden={tab !== 'tiktok'}>
+	<section class="card tiktok" id="tiktok" hidden={tab !== 'connections'}>
 		<div class="card-head">
 			<h2 class="card-title">TikTok account</h2>
 			{#if data.account}<span class="pill published"
@@ -121,6 +129,78 @@
 			</div>
 			<a href="/app/settings/tiktok" class="btn dark" data-sveltekit-reload
 				>Continue with TikTok</a
+			>
+		{/if}
+	</section>
+
+	<section class="card youtube" id="youtube" hidden={tab !== 'connections'}>
+		<div class="card-head">
+			<h2 class="card-title">YouTube channel</h2>
+			{#if data.youtube}<span class="pill published"
+					><Icon name="check" size={12} /> Connected</span
+				>{/if}
+		</div>
+
+		{#if youtubeOk}<p class="alert ok" role="status">
+				YouTube channel connected.
+			</p>{/if}
+		{#if youtubeError}<p class="alert" role="alert">{youtubeError}</p>{/if}
+		{#if msg('youtube')?.ok}<p class="alert ok" role="status">
+				{msg('youtube')?.ok}
+			</p>{/if}
+
+		{#if data.youtube}
+			<div class="who">
+				{#if data.youtube.avatar_url}<img
+						class="avatar lg"
+						src={data.youtube.avatar_url}
+						alt=""
+						referrerpolicy="no-referrer"
+					/>{/if}
+				<div>
+					<strong>{data.youtube.display_name}</strong>
+					<small class="muted"
+						>Connected {date(data.youtube.connected_at)}</small
+					>
+				</div>
+			</div>
+			<p class="muted small">
+				{site.name} can upload videos to this channel.
+				{#if data.youtube.refresh_expires_at}The connection stays valid until
+					{date(data.youtube.refresh_expires_at)}; reconnect before then to keep
+					scheduling.{/if}
+			</p>
+			<div class="actions">
+				<a href="/app/settings/youtube" class="btn" data-sveltekit-reload
+					>Reconnect</a
+				>
+				<form
+					method="POST"
+					action="?/disconnectYouTube"
+					use:enhance={submit}
+					bind:this={ytDisconnectForm}
+				>
+					<button
+						class="btn danger"
+						type="button"
+						disabled={pending}
+						onclick={() => (ytDisconnectOpen = true)}>Disconnect</button
+					>
+				</form>
+			</div>
+		{:else}
+			<div class="connect">
+				<div class="connect-ico"><Icon name="link" size={22} /></div>
+				<div>
+					<strong>Connect your YouTube channel</strong>
+					<p class="muted small">
+						You'll sign in with Google and allow {site.name} to view your channel
+						(name and picture) and to upload videos to it. We never see your password.
+					</p>
+				</div>
+			</div>
+			<a href="/app/settings/youtube" class="btn dark" data-sveltekit-reload
+				>Continue with YouTube</a
 			>
 		{/if}
 	</section>
@@ -301,6 +381,14 @@
 	onconfirm={() => disconnectForm?.requestSubmit()}
 />
 
+<ConfirmDialog
+	bind:open={ytDisconnectOpen}
+	title="Disconnect YouTube?"
+	description="Mengepost will no longer be able to upload to this channel until you reconnect it."
+	confirmLabel="Disconnect"
+	onconfirm={() => ytDisconnectForm?.requestSubmit()}
+/>
+
 <style>
 	.grid {
 		display: grid;
@@ -309,8 +397,12 @@
 		align-items: start;
 	}
 	.tiktok,
+	.youtube,
 	.team {
 		grid-column: 1 / -1;
+	}
+	.youtube {
+		margin-top: 16px;
 	}
 	.alert {
 		margin: 0 0 14px;
