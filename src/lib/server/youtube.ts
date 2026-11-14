@@ -1,18 +1,12 @@
 import { env } from 'cloudflare:workers';
 import { decrypt, encrypt } from './crypto.ts';
+import { PlatformError } from './platform-error.ts';
 
 const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'];
 
 export const redirectUri = () => `${env.ORIGIN}/auth/youtube/callback`;
 
-export class YouTubeError extends Error {
-	constructor(
-		message: string,
-		public code = 'error'
-	) {
-		super(message);
-	}
-}
+export class YouTubeError extends PlatformError {}
 
 const FRIENDLY: Record<string, string> = {
 	not_connected: 'Connect a YouTube channel in Account Settings first.',

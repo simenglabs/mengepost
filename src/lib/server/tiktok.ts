@@ -1,20 +1,17 @@
 import { env } from 'cloudflare:workers';
-import type { CreatorInfo, Post } from '#lib/posts.ts';
+import type { CreatorInfo } from '#lib/posts.ts';
+import type { TikTokSettings } from '#lib/targets.ts';
+import type { Adapter, PublishInput } from './adapters.ts';
 import { chunking } from './chunking.ts';
 import { decrypt, encrypt } from './crypto.ts';
+import { mediaObject } from './media.ts';
+import { PlatformError } from './platform-error.ts';
 
 const API = 'https://open.tiktokapis.com';
 
 export const redirectUri = () => `${env.ORIGIN}/auth/callback`;
 
-export class TikTokError extends Error {
-	constructor(
-		message: string,
-		public code = 'error'
-	) {
-		super(message);
-	}
-}
+export class TikTokError extends PlatformError {}
 
 const FRIENDLY: Record<string, string> = {
 	not_connected: 'Connect a TikTok account in Account Settings first.',
@@ -128,41 +125,42 @@ export async function disconnectAccount(userId: string) {
 export const creatorInfo = (token: string) => api<CreatorInfo>('/v2/post/publish/creator_info/query/', token, {});
 
 /** Uploads the post's video from R2 to TikTok via Direct Post. Returns TikTok's publish_id. */
-export async function uploadToTikTok(post: Post) {
-	if (!post.video_key) fail('no_video', 'Add a video before publishing.');
-	if (!post.privacy) fail('no_privacy', 'Choose who can view this video.');
+async function upload({ userId, caption, media, settings }: PublishInput) {
+	const s = settings as TikTokSettings;
+	const video = media[0];
+	if (!video) fail('no_video', 'Add a video before publishing.');
+	if (!s.privacy) fail('no_privacy', 'Choose who can view this video.');
 
-	const token = await accessToken(post.user_id);
+	const token = await accessToken(userId);
 	const info = await creatorInfo(token);
-	if (!info.privacy_level_options.includes(post.privacy!)) fail('privacy_level_option_mismatch');
+	if (!info.privacy_level_options.includes(s.privacy!)) fail('privacy_level_option_mismatch');
 
-	const head = await env.MEDIA.head(post.video_key!);
-	if (!head) fail('no_video', 'The video file is missing. Upload it again.');
-	const size = head!.size;
+	const size = video.size;
 	const { chunk_size, total_chunk_count } = chunking(size);
 
 	const init = await api<{ publish_id: string; upload_url: string }>('/v2/post/publish/video/init/', token, {
 		post_info: {
-			title: post.caption.slice(0, 2200),
-			privacy_level: post.privacy,
-			disable_comment: !post.allow_comment || info.comment_disabled,
-			disable_duet: !post.allow_duet || info.duet_disabled,
-			disable_stitch: !post.allow_stitch || info.stitch_disabled,
-			brand_content_toggle: !!post.brand_content,
-			brand_organic_toggle: !!post.brand_organic
+			title: caption.slice(0, 2200),
+			privacy_level: s.privacy,
+			disable_comment: !s.allow_comment || info.comment_disabled,
+			disable_duet: !s.allow_duet || info.duet_disabled,
+			disable_stitch: !s.allow_stitch || info.stitch_disabled,
+			brand_content_toggle: !!s.brand_content,
+			brand_organic_toggle: !!s.brand_organic
 		},
 		source_info: { source: 'FILE_UPLOAD', video_size: size, chunk_size, total_chunk_count }
 	});
 
+	// A failed chunk upload stays 'failed': TikTok does not publish incomplete uploads.
 	for (let i = 0; i < total_chunk_count; i++) {
 		const start = i * chunk_size;
 		const end = i === total_chunk_count - 1 ? size : start + chunk_size;
-		const part = await env.MEDIA.get(post.video_key!, { range: { offset: start, length: end - start } });
+		const part = await mediaObject(video, { offset: start, length: end - start });
 		if (!part) fail('no_video', 'The video file is missing. Upload it again.');
 		const res = await fetch(init.upload_url, {
 			method: 'PUT',
 			headers: {
-				'Content-Type': post.video_type || 'video/mp4',
+				'Content-Type': video.type || 'video/mp4',
 				'Content-Range': `bytes ${start}-${end - 1}/${size}`
 			},
 			body: await part!.arrayBuffer()
@@ -175,7 +173,15 @@ export async function uploadToTikTok(post: Post) {
 	return init.publish_id;
 }
 
-export async function publishStatus(userId: string, publishId: string) {
-	const token = await accessToken(userId);
-	return api<{ status: string; fail_reason?: string }>('/v2/post/publish/status/fetch/', token, { publish_id: publishId });
-}
+export const tiktokAdapter: Adapter = {
+	async publish(input) {
+		return { state: 'processing', externalId: await upload(input) };
+	},
+	async poll(userId, externalId) {
+		const token = await accessToken(userId);
+		const r = await api<{ status: string; fail_reason?: string }>('/v2/post/publish/status/fetch/', token, { publish_id: externalId });
+		if (r.status === 'PUBLISH_COMPLETE') return { state: 'published', url: null };
+		if (r.status === 'FAILED') return { state: 'failed', reason: r.fail_reason ?? 'TikTok could not publish this video.' };
+		return { state: 'processing' };
+	}
+};

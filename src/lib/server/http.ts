@@ -1,6 +1,6 @@
 import { error, json, type RequestEvent } from '@sveltejs/kit';
 import { PostError } from './posts.ts';
-import { TikTokError } from './tiktok.ts';
+import { PlatformError } from './platform-error.ts';
 
 export function requireUser(event: RequestEvent) {
 	if (!event.locals.user) error(401, 'Not signed in');
@@ -13,7 +13,7 @@ export async function handle<T>(fn: () => Promise<T>) {
 		return json(await fn());
 	} catch (e) {
 		if (e instanceof PostError) return json({ message: e.message }, { status: e.status });
-		if (e instanceof TikTokError) return json({ message: e.message, code: e.code }, { status: 502 });
+		if (e instanceof PlatformError) return json({ message: e.message, code: e.code }, { status: 502 });
 		throw e;
 	}
 }
