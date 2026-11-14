@@ -1,8 +1,8 @@
 import type { Platform } from '#lib/platforms.ts';
 import type { TargetSettings } from '#lib/targets.ts';
 import type { MediaRow } from './media.ts';
-import { PlatformError } from './platform-error.ts';
 import { tiktokAdapter } from './tiktok.ts';
+import { youtubeAdapter } from './youtube.ts';
 
 export type PublishInput = { userId: string; postId: string; caption: string; media: MediaRow[]; settings: TargetSettings };
 
@@ -18,12 +18,5 @@ export interface Adapter {
 	/** Validates the account before publishing, e.g. TikTok creator info. */
 	check?(userId: string): Promise<void>;
 }
-
-// Task 7 replaces this stub.
-const youtubeAdapter: Adapter = {
-	async publish() {
-		throw new PlatformError('YouTube posting is not ready yet.');
-	}
-};
 
 export const adapters: Partial<Record<Platform, Adapter>> = { tiktok: tiktokAdapter, youtube: youtubeAdapter };

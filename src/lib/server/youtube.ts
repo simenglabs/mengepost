@@ -1,6 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { decrypt, encrypt } from './crypto.ts';
+import type { YouTubeSettings } from '#lib/targets.ts';
+import type { Adapter } from './adapters.ts';
+import { mediaObject } from './media.ts';
 import { PlatformError } from './platform-error.ts';
+import { classifyInit, classifyPoll, classifyUpload, type Classified } from './youtube-errors.ts';
 
 const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'];
 
@@ -133,3 +137,73 @@ export async function disconnectAccount(userId: string) {
 	}).catch((e) => console.error('youtube revoke', e));
 	await env.DB.prepare("DELETE FROM social_accounts WHERE user_id = ? AND platform = 'youtube'").bind(userId).run();
 }
+
+const raise = (c: Classified): never => {
+	throw new YouTubeError(FRIENDLY[c.code] ?? c.message, c.code, c.outcome);
+};
+
+const UPLOAD_URL = 'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status';
+
+export const youtubeAdapter: Adapter = {
+	async publish({ userId, caption, media, settings }) {
+		const m = media[0];
+		if (!m) fail('no_video', 'Add a video before posting to YouTube.');
+		const s = settings as YouTubeSettings;
+		const token = await accessToken(userId);
+
+		// Step 1: start a resumable session. Nothing is uploaded yet, so failures here are definite.
+		const init = await fetch(UPLOAD_URL, {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${token}`,
+				'Content-Type': 'application/json; charset=UTF-8',
+				'X-Upload-Content-Length': String(m.size),
+				'X-Upload-Content-Type': m.type
+			},
+			body: JSON.stringify({
+				snippet: { title: s.title, description: caption, categoryId: '22' },
+				status: { privacyStatus: s.visibility, selfDeclaredMadeForKids: s.made_for_kids }
+			})
+		});
+		if (!init.ok) {
+			const body = await init.json().catch(() => ({}));
+			console.error('youtube init', init.status, JSON.stringify(body?.error));
+			raise(classifyInit(init.status, body));
+		}
+		const location = init.headers.get('Location');
+		if (!location) fail('upload_failed', 'YouTube did not return an upload address. Try again.');
+
+		// Step 3: send the bytes. From here on YouTube may have accepted the video even if we see an error.
+		const obj = await mediaObject(m);
+		if (!obj) fail('media_missing', 'The video file is missing. Upload it again.');
+		let res: Response;
+		try {
+			res = await fetch(location!, {
+				method: 'PUT',
+				headers: { 'Content-Type': m.type, 'Content-Length': String(m.size) },
+				body: obj!.body
+			});
+		} catch (e) {
+			console.error('youtube upload', e);
+			throw new YouTubeError('The connection to YouTube dropped during upload. Check your channel before retrying.', 'upload_unknown', 'unknown');
+		}
+		const body: any = await res.json().catch(() => ({}));
+		if (res.status === 200 || res.status === 201) {
+			if (!body.id) throw new YouTubeError('YouTube did not confirm the upload. Check your channel before retrying.', 'upload_unknown', 'unknown');
+			return { state: 'processing', externalId: body.id as string };
+		}
+		console.error('youtube upload', res.status, JSON.stringify(body?.error));
+		return raise(classifyUpload(res.status, body));
+	},
+	async poll(userId, externalId) {
+		const token = await accessToken(userId);
+		const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=status&id=${encodeURIComponent(externalId)}`, {
+			headers: { Authorization: `Bearer ${token}` }
+		});
+		const body: any = await res.json().catch(() => ({}));
+		if (res.status === 401) fail('reconnect');
+		// A failed poll is not a verdict on the video: let the caller retry later.
+		if (!res.ok) throw new YouTubeError(body?.error?.message ?? `YouTube status check failed (${res.status}).`, String(res.status), 'unknown');
+		return classifyPoll(externalId, body);
+	}
+};
