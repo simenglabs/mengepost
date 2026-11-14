@@ -1,4 +1,6 @@
 // Shared (client + server) post types and labels.
+import type { Platform } from './platforms.ts';
+import type { TargetStatus, TargetSettings } from './targets.ts';
 
 export type Privacy =
 	| 'PUBLIC_TO_EVERYONE'
@@ -18,23 +20,47 @@ export type Post = {
 	user_id: string;
 	caption: string;
 	status: Status;
-	privacy: Privacy | null;
-	allow_comment: number;
-	allow_duet: number;
-	allow_stitch: number;
-	brand_organic: number;
-	brand_content: number;
-	video_key: string | null;
-	video_name: string | null;
-	video_size: number | null;
-	video_type: string | null;
 	scheduled_at: number | null;
 	published_at: number | null;
-	publish_id: string | null;
-	fail_reason: string | null;
 	created_at: number;
 	updated_at: number;
 };
+
+export type Media = {
+	id: string;
+	post_id: string;
+	position: number;
+	kind: 'image' | 'video';
+	name: string;
+	size: number;
+	type: string;
+	duration_ms: number | null;
+};
+
+export type Target = {
+	post_id: string;
+	platform: Platform;
+	status: TargetStatus;
+	caption: string | null;
+	settings: TargetSettings;
+	external_id: string | null;
+	external_url: string | null;
+	fail_reason: string | null;
+	started_at: number | null;
+	published_at: number | null;
+	updated_at: number;
+};
+
+export type PostView = Post & { media: Media[]; targets: Target[] };
+
+/** Short progress line for a post card, or '' when not relevant. */
+export function postSummary(v: PostView): string {
+	if (v.status !== 'publishing' && v.status !== 'published' && v.status !== 'failed') return '';
+	const unknown = v.targets.filter((t) => t.status === 'unknown').length;
+	if (unknown > 0) return `${unknown} needs checking`;
+	const published = v.targets.filter((t) => t.status === 'published').length;
+	return `${published} of ${v.targets.length} published`;
+}
 
 export type CreatorInfo = {
 	creator_avatar_url: string;
