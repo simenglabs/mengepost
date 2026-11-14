@@ -166,7 +166,7 @@ export const youtubeAdapter: Adapter = {
 			})
 		});
 		if (!init.ok) {
-			const body = await init.json().catch(() => ({}));
+			const body: any = await init.json().catch(() => ({}));
 			console.error('youtube init', init.status, JSON.stringify(body?.error));
 			raise(classifyInit(init.status, body));
 		}
