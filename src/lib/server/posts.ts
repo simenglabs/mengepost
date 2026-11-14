@@ -8,7 +8,6 @@ import {
 	readinessError,
 	type TargetSettings,
 } from '#lib/targets.ts';
-import { deleteAllMedia } from './media.ts';
 
 export class PostError extends Error {
 	constructor(
@@ -20,6 +19,7 @@ export class PostError extends Error {
 }
 
 export const FROZEN_MESSAGE = 'This post is already being published and cannot be edited.';
+const BUSY_MESSAGE = 'Wait until publishing finishes.';
 export const LOCKED_MESSAGE = 'Part of this post is already published. Only failed platforms can be changed.';
 
 const MEDIA_COLS = 'm.id, m.post_id, m.position, m.kind, m.name, m.size, m.type, m.duration_ms';
@@ -280,10 +280,14 @@ export async function updatePost(userId: string, id: string, patch: Patch): Prom
 
 export async function deletePost(userId: string, id: string): Promise<void> {
 	const post = await getPost(userId, id);
-	if (post.status === 'publishing') throw new PostError('Wait until publishing finishes.', 409);
-	await deleteAllMedia(id);
-	await env.DB.batch([
-		env.DB.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(id),
-		env.DB.prepare('DELETE FROM posts WHERE id = ? AND user_id = ?').bind(id, userId),
+	if (post.status === 'publishing') throw new PostError(BUSY_MESSAGE, 409);
+	// Every delete repeats the not-publishing condition, so a publish claim in between stops all of them.
+	const guard = "EXISTS (SELECT 1 FROM posts WHERE id = ? AND user_id = ? AND status != 'publishing')";
+	const [media, , deleted] = await env.DB.batch<{ r2_key: string }>([
+		env.DB.prepare(`DELETE FROM post_media WHERE post_id = ? AND ${guard} RETURNING r2_key`).bind(id, id, userId),
+		env.DB.prepare(`DELETE FROM post_targets WHERE post_id = ? AND ${guard}`).bind(id, id, userId),
+		env.DB.prepare("DELETE FROM posts WHERE id = ? AND user_id = ? AND status != 'publishing'").bind(id, userId),
 	]);
+	if (!deleted.meta.changes) throw new PostError(BUSY_MESSAGE, 409);
+	if (media.results.length) await env.MEDIA.delete(media.results.map((m) => m.r2_key));
 }

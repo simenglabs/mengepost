@@ -1,11 +1,16 @@
-import { error } from '@sveltejs/kit';
-import { requireUser } from '#lib/server/http.ts';
+import { getPost } from '#lib/server/posts.ts';
+import { syncPost } from '#lib/server/publish.ts';
+import { handle, requireUser } from '#lib/server/http.ts';
 import type { RequestHandler } from './$types';
 
 export const prerender = false;
 
-// Publishing moves to src/lib/server/publish.ts (broadcast phase 1, Task 6).
+/** Checks platforms that are still processing. */
 export const POST: RequestHandler = async (event) => {
-	requireUser(event);
-	error(501, 'Publishing is being rebuilt for multiple platforms.');
+	const user = requireUser(event);
+	return handle(async () => {
+		const post = await getPost(user.id, event.params.id);
+		await syncPost(post);
+		return getPost(user.id, post.id);
+	});
 };

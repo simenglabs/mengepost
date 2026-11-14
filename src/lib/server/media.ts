@@ -23,15 +23,28 @@ async function editablePost(userId: string, postId: string) {
 	return post;
 }
 
-async function mediaRows(postId: string) {
+export async function mediaRows(postId: string) {
 	const { results } = await env.DB.prepare('SELECT * FROM post_media WHERE post_id = ? ORDER BY position')
 		.bind(postId)
 		.all<MediaRow & { created_at: number }>();
 	return results;
 }
 
+/** Media may still change: the post is not claimed for publishing and nothing is published or awaiting a check. */
+const EDITABLE = `EXISTS (SELECT 1 FROM posts WHERE id = ? AND status NOT IN ('publishing', 'published'))
+	AND NOT EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status IN ('published', 'unknown'))`;
+/** Bumps the post while EDITABLE. */
 const touch = (postId: string) =>
-	env.DB.prepare('UPDATE posts SET updated_at = ? WHERE id = ?').bind(Date.now(), postId);
+	env.DB.prepare(`UPDATE posts SET updated_at = ? WHERE id = ? AND ${EDITABLE}`).bind(Date.now(), postId, postId, postId);
+
+/**
+ * Runs a media write batch that starts with `touch`. Every statement repeats EDITABLE, so a publish claim
+ * between the read and this batch stops all of it; there is no gap between the check and the write.
+ */
+async function editBatch(statements: D1PreparedStatement[]) {
+	const [touched] = await env.DB.batch(statements);
+	if (!touched.meta.changes) throw new PostError(FROZEN_MESSAGE, 409);
+}
 
 /** Stores an uploaded file in R2. A new video replaces the old one; images are appended. */
 export async function addMedia(
@@ -60,13 +73,19 @@ export async function addMedia(
 	const duration = meta.duration_ms != null && Number.isFinite(meta.duration_ms) && meta.duration_ms >= 0
 		? Math.round(meta.duration_ms)
 		: null;
-	await env.DB.batch([
-		...old.map((m) => env.DB.prepare('DELETE FROM post_media WHERE id = ?').bind(m.id)),
-		env.DB.prepare(
-			'INSERT INTO post_media (id, post_id, position, kind, r2_key, name, size, type, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-		).bind(crypto.randomUUID(), postId, position, kind, key, meta.name.slice(0, 200), meta.size, meta.type, duration, Date.now()),
-		touch(postId),
-	]);
+	try {
+		await editBatch([
+			touch(postId),
+			...old.map((m) => env.DB.prepare(`DELETE FROM post_media WHERE id = ? AND ${EDITABLE}`).bind(m.id, postId, postId)),
+			env.DB.prepare(
+				`INSERT INTO post_media (id, post_id, position, kind, r2_key, name, size, type, duration_ms, created_at)
+				 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${EDITABLE}`,
+			).bind(crypto.randomUUID(), postId, position, kind, key, meta.name.slice(0, 200), meta.size, meta.type, duration, Date.now(), postId, postId),
+		]);
+	} catch (e) {
+		await env.MEDIA.delete(key);
+		throw e;
+	}
 	if (old.length) await env.MEDIA.delete(old.map((m) => m.r2_key));
 	return getPost(userId, postId);
 }
@@ -77,10 +96,12 @@ export async function removeMedia(userId: string, postId: string, mediaId: strin
 	const target = rows.find((m) => m.id === mediaId);
 	if (!target) throw new PostError('Media not found', 404);
 	const rest = rows.filter((m) => m.id !== mediaId);
-	await env.DB.batch([
-		env.DB.prepare('DELETE FROM post_media WHERE id = ?').bind(mediaId),
-		...rest.map((m, i) => env.DB.prepare('UPDATE post_media SET position = ? WHERE id = ?').bind(i, m.id)),
+	await editBatch([
 		touch(postId),
+		env.DB.prepare(`DELETE FROM post_media WHERE id = ? AND ${EDITABLE}`).bind(mediaId, postId, postId),
+		...rest.map((m, i) =>
+			env.DB.prepare(`UPDATE post_media SET position = ? WHERE id = ? AND ${EDITABLE}`).bind(i, m.id, postId, postId),
+		),
 	]);
 	await env.MEDIA.delete(target.r2_key);
 	return getPost(userId, postId);
@@ -92,9 +113,11 @@ export async function reorderMedia(userId: string, postId: string, ids: string[]
 	const current = new Set(post.media.map((m) => m.id));
 	if (ids.length !== current.size || new Set(ids).size !== ids.length || !ids.every((id) => current.has(id)))
 		throw new PostError('Invalid media order.');
-	await env.DB.batch([
-		...ids.map((id, i) => env.DB.prepare('UPDATE post_media SET position = ? WHERE id = ? AND post_id = ?').bind(i, id, postId)),
+	await editBatch([
 		touch(postId),
+		...ids.map((id, i) =>
+			env.DB.prepare(`UPDATE post_media SET position = ? WHERE id = ? AND post_id = ? AND ${EDITABLE}`).bind(i, id, postId, postId, postId),
+		),
 	]);
 	return getPost(userId, postId);
 }
