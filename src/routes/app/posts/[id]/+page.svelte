@@ -70,6 +70,8 @@
 	let nextStatus = $state<Next>('draft');
 	let when = $state('');
 	let baseline = $state('');
+	/** Stored media the user removed; deleted on the server only when the post is saved. */
+	let removed = $state<string[]>([]);
 	let initialized = $state(false);
 	let leavingAfterSave = false;
 	let deleteOpen = $state(false);
@@ -114,6 +116,7 @@
 						: ((data.initialStatus as Next | null) ??
 							(data.date ? 'scheduled' : 'draft'));
 			when = p?.scheduled_at ? toLocal(p.scheduled_at) : defaultTime();
+			removed = [];
 			baseline = snapshot();
 			initialized = true;
 		});
@@ -132,13 +135,15 @@
 	});
 
 	let pending = $state<File[]>([]);
+	const keptMedia = $derived((post?.media ?? []).filter((m) => !removed.includes(m.id)));
 	let progress = $state<{ index: number; total: number; fraction: number | null } | null>(null);
 	let busy = $state(false);
 	let error = $state('');
 	let notice = $state('');
 
 	const dirty = $derived(
-		initialized && (snapshot() !== baseline || pending.length > 0),
+		initialized &&
+			(snapshot() !== baseline || pending.length > 0 || removed.length > 0),
 	);
 	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 	const origin = $derived(
@@ -188,7 +193,7 @@
 		pendingVideo
 			? [{ kind: 'video' }]
 			: [
-					...(post?.media ?? []).map((m) => ({ kind: m.kind })),
+					...keptMedia.map((m) => ({ kind: m.kind })),
 					...pending.map(() => ({ kind: 'image' as const })),
 				],
 	);
@@ -196,7 +201,7 @@
 	const imageCount = $derived(media.filter((m) => m.kind === 'image').length);
 	const videoSeconds = $derived.by(() => {
 		if (pendingVideo) return durations.get(pendingVideo) ?? null;
-		const saved = post?.media.find((m) => m.kind === 'video');
+		const saved = keptMedia.find((m) => m.kind === 'video');
 		if (!saved) return null;
 		return saved.duration_ms != null
 			? saved.duration_ms / 1000
@@ -328,12 +333,19 @@
 				scheduled_at: status === 'scheduled' ? new Date(when).getTime() : null,
 				targets: targetsBody(selected),
 			};
-			// Scheduling checks the media, so upload first and schedule after.
-			const first: Next = pending.length && status === 'scheduled' ? 'draft' : status;
+			// Scheduling checks the media, so change the media first and schedule after.
+			const first: Next =
+				(pending.length || removed.length) && status === 'scheduled' ? 'draft' : status;
 			let p = post
 				? await api(`/api/posts/${post.id}`, 'PATCH', { ...fields, status: first })
 				: await api('/api/posts', 'POST', { ...fields, status: first });
 			post = p;
+			for (const id of [...removed]) {
+				p = await api(`/api/posts/${p.id}/media/${id}`, 'DELETE');
+				post = p;
+				removed = removed.filter((x) => x !== id);
+				durations.delete(id);
+			}
 			const queue = [...pending];
 			for (const [i, f] of queue.entries()) {
 				progress = { index: i + 1, total: queue.length, fraction: 0 };
@@ -434,19 +446,10 @@
 		}
 	}
 
-	async function removeMedia(id: string) {
-		if (busy || !post) return;
-		if (!confirm('Remove this file from the post? This cannot be undone.')) return;
-		busy = true;
-		error = '';
-		try {
-			post = await api(`/api/posts/${post.id}/media/${id}`, 'DELETE');
-			durations.delete(id);
-		} catch (e) {
-			error = (e as Error).message;
-		} finally {
-			busy = false;
-		}
+	/** Marks stored media for removal; it is deleted when the post is saved. */
+	function removeMedia(id: string) {
+		if (busy || removed.includes(id)) return;
+		removed = [...removed, id];
 	}
 
 	async function reorderMedia(ids: string[]) {
@@ -571,7 +574,7 @@
 	>
 		<section class="card preview" aria-label="Media">
 			<MediaPicker
-				media={post?.media ?? []}
+				media={keptMedia}
 				bind:pending
 				locked={contentLocked || busy}
 				postId={post?.id ?? null}
