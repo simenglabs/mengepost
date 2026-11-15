@@ -85,11 +85,15 @@ export const actions: Actions = {
 		if (locals.user!.role !== 'admin') error(403, 'Admins only');
 		const id = String((await request.formData()).get('id') ?? '');
 		if (id === locals.user!.id) return fail(400, { section: 'team', error: 'You cannot remove yourself.' });
-		// Clean up the user's stored videos; DB rows cascade.
-		const { results } = await env.DB.prepare('SELECT video_key FROM posts WHERE user_id = ? AND video_key IS NOT NULL')
+		// Clean up the user's stored media files; DB rows cascade.
+		const { results } = await env.DB.prepare(
+			'SELECT m.r2_key FROM post_media m JOIN posts p ON p.id = m.post_id WHERE p.user_id = ?',
+		)
 			.bind(id)
-			.all<{ video_key: string }>();
-		if (results.length) await env.MEDIA.delete(results.map((r) => r.video_key));
+			.all<{ r2_key: string }>();
+		// R2 deletes up to 1000 keys per call.
+		for (let i = 0; i < results.length; i += 1000)
+			await env.MEDIA.delete(results.slice(i, i + 1000).map((r) => r.r2_key));
 		await disconnectAccount(id).catch(() => {});
 		await disconnectYouTube(id).catch(() => {});
 		await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
