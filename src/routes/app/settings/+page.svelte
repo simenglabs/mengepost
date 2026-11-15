@@ -72,7 +72,8 @@
 		Saving your changes…
 	</p>{/if}
 <div class="grid">
-	<section class="card tiktok" id="tiktok" hidden={tab !== 'connections'}>
+	<div class="connections" hidden={tab !== 'connections'}>
+	<section class="card tiktok" id="tiktok">
 		<div class="card-head">
 			<h2 class="card-title">TikTok account</h2>
 			{#if data.account}<span class="pill published"
@@ -139,7 +140,7 @@
 		{/if}
 	</section>
 
-	<section class="card youtube" id="youtube" hidden={tab !== 'connections'}>
+	<section class="card youtube" id="youtube">
 		<div class="card-head">
 			<h2 class="card-title">YouTube channel</h2>
 			{#if data.youtube}<span class="pill published"
@@ -212,7 +213,7 @@
 	</section>
 
 	{#each soon as s (s.platform)}
-		<section class="card soon" id={s.platform} hidden={tab !== 'connections'}>
+		<section class="card soon" id={s.platform}>
 			<div class="card-head">
 				<h2 class="card-title">{platformLabel[s.platform]}</h2>
 				<span class="pill">Coming soon</span>
@@ -220,6 +221,7 @@
 			<p class="muted small">{s.text}</p>
 		</section>
 	{/each}
+	</div>
 
 	<section class="card" hidden={tab !== 'profile'}>
 		<div class="card-head"><h2 class="card-title">Profile</h2></div>
@@ -412,13 +414,44 @@
 		gap: 16px;
 		align-items: start;
 	}
-	.tiktok,
-	.youtube,
 	.team {
 		grid-column: 1 / -1;
 	}
-	.youtube {
-		margin-top: 16px;
+	/* Connections: two cards per row, wider than the single-column sections. */
+	.grid:has(.connections:not([hidden])) {
+		grid-template-columns: minmax(0, 1040px);
+	}
+	.connections {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 20px;
+		align-items: stretch;
+	}
+	.connections[hidden] {
+		display: none;
+	}
+	.connections .card {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		margin: 0;
+	}
+	.connections .card > :global(*) {
+		margin-top: 0;
+		margin-bottom: 0;
+	}
+	.connections .actions,
+	.connections .card > .btn {
+		margin-top: auto;
+	}
+	.connections .card > .btn {
+		align-self: flex-start;
+	}
+	@media (max-width: 800px) {
+		.connections {
+			grid-template-columns: 1fr;
+			gap: 16px;
+		}
 	}
 	.alert {
 		margin: 0 0 14px;
