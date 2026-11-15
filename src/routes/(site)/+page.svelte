@@ -5,19 +5,19 @@
 	const faqs = [
 		{
 			q: 'What can I do with mengepost?',
-			a: 'Capture content ideas, develop drafts, upload videos, and publish to your TikTok account now or at a scheduled time. Your board and calendar keep the whole process in view.',
+			a: 'Capture content ideas, develop drafts, upload videos, and publish to TikTok and YouTube now or at a scheduled time. Instagram, Threads, and X are coming soon. Your board and calendar keep the whole process in view.',
 		},
 		{
-			q: 'How do I connect my TikTok account?',
-			a: 'Open Account Settings in your workspace and choose Continue with TikTok. TikTok asks you to approve profile and posting access. mengepost never sees your TikTok password.',
+			q: 'How do I connect my accounts?',
+			a: 'Open Settings → Connections in your workspace and choose the platform you want to connect, TikTok or YouTube. The platform asks you to approve profile and posting access. mengepost never sees your TikTok or Google password.',
 		},
 		{
 			q: 'Can I choose who sees my videos?',
-			a: 'Yes. Before publishing, choose from the privacy options available for your TikTok account. You can also manage comments, duets, stitches, and content disclosures.',
+			a: 'Yes. Before publishing, choose from the privacy options available for each connected account, such as TikTok privacy levels or YouTube visibility. You can also manage comments, duets, stitches, content disclosures, and the YouTube made-for-kids setting.',
 		},
 		{
 			q: 'What happens to my uploaded videos?',
-			a: 'Videos are stored while you prepare and schedule them. Once TikTok confirms a successful publication, the video file is removed from mengepost storage. You can also delete a post and its stored video yourself.',
+			a: 'Videos are stored while you prepare and schedule them. Once every platform you chose has published it, the video file is removed from mengepost storage. You can also delete a post and its stored video yourself.',
 		},
 		{
 			q: 'How do I get access to a workspace?',
@@ -29,7 +29,7 @@
 <svelte:head
 	><title>{site.name} — A calmer space for your next post</title><meta
 		name="description"
-		content="A little planning. More room to create. Capture ideas, plan your calendar, and publish to TikTok from one calm workspace."
+		content="A little planning. More room to create. Capture ideas, plan your calendar, and publish to TikTok and YouTube from one calm workspace."
 	/></svelte:head
 >
 <section class="hero">
@@ -41,7 +41,7 @@
 	<p>
 		Your ideas deserve a little room to grow. Plan, prepare, and<br
 			class="desktop-break"
-		/> publish to TikTok — all in one thoughtful workspace.
+		/> publish to TikTok and YouTube — all in one thoughtful workspace.
 	</p>
 	<div class="hero-actions">
 		<a href="/login" class="btn primary"
