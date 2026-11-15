@@ -124,6 +124,9 @@ export function staleOutcome(
 	return !canPoll || age > PROCESSING_GIVE_UP_MS ? 'unknown' : null;
 }
 
+/** Whether a link uses https (scheme compared case-insensitively). */
+export const isHttps = (url: string) => /^https:\/\//i.test(url);
+
 export function shouldDeleteMedia(targets: TargetStatus[]): boolean {
 	return targets.length > 0 && targets.every((t) => t === 'published');
 }

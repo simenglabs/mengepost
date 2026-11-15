@@ -21,8 +21,19 @@ export class PostError extends Error {
 export const FROZEN_MESSAGE = 'This post is already being published and cannot be edited.';
 const BUSY_MESSAGE = 'Wait until publishing finishes.';
 export const LOCKED_MESSAGE = 'Part of this post is already published. Only failed platforms can be changed.';
+export const CHANGED_MESSAGE = 'This post just changed. Try again.';
 
 const MEDIA_COLS = 'm.id, m.post_id, m.position, m.kind, m.name, m.size, m.type, m.duration_ms';
+/** Client-facing post columns; `rev` stays on the server. */
+const POST_COLS = 'p.id, p.user_id, p.caption, p.status, p.scheduled_at, p.published_at, p.created_at, p.updated_at';
+
+/** A post as stored, with `rev`: a random token replaced on every guarded post write. */
+export type StoredPost = PostView & { rev: string };
+
+/** A fresh write token for `posts.rev`. */
+export const newRev = () => crypto.randomUUID();
+/** The next `updated_at`: now, but always later than the value it replaces (for display and ordering). */
+export const nextUpdatedAt = (prev: number) => Math.max(Date.now(), prev + 1);
 type TargetRow = Omit<Target, 'settings'> & { settings: string };
 
 const byPlatform = (a: Target, b: Target) => PLATFORMS.indexOf(a.platform) - PLATFORMS.indexOf(b.platform);
@@ -47,7 +58,7 @@ function assemble(posts: Post[], media: Media[], targets: TargetRow[]): PostView
 
 export async function listPosts(userId: string): Promise<PostView[]> {
 	const [posts, media, targets] = await env.DB.batch<any>([
-		env.DB.prepare('SELECT * FROM posts WHERE user_id = ? ORDER BY updated_at DESC').bind(userId),
+		env.DB.prepare(`SELECT ${POST_COLS} FROM posts p WHERE p.user_id = ? ORDER BY p.updated_at DESC`).bind(userId),
 		env.DB.prepare(
 			`SELECT ${MEDIA_COLS} FROM post_media m JOIN posts p ON p.id = m.post_id WHERE p.user_id = ? ORDER BY m.post_id, m.position`,
 		).bind(userId),
@@ -58,14 +69,21 @@ export async function listPosts(userId: string): Promise<PostView[]> {
 	return assemble(posts.results as Post[], media.results as Media[], targets.results as TargetRow[]);
 }
 
-export async function getPost(userId: string, id: string): Promise<PostView> {
+/** Reads a post with its `rev`, for writes that must apply only to exactly this version. Server-only. */
+export async function readPost(userId: string, id: string): Promise<StoredPost> {
 	const [posts, media, targets] = await env.DB.batch<any>([
-		env.DB.prepare('SELECT * FROM posts WHERE id = ? AND user_id = ?').bind(id, userId),
+		env.DB.prepare(`SELECT ${POST_COLS}, p.rev FROM posts p WHERE p.id = ? AND p.user_id = ?`).bind(id, userId),
 		env.DB.prepare(`SELECT ${MEDIA_COLS} FROM post_media m WHERE m.post_id = ? ORDER BY m.position`).bind(id),
 		env.DB.prepare('SELECT * FROM post_targets WHERE post_id = ?').bind(id),
 	]);
 	const [view] = assemble(posts.results as Post[], media.results as Media[], targets.results as TargetRow[]);
 	if (!view) throw new PostError('Post not found', 404);
+	return view as StoredPost;
+}
+
+/** Reads a post for the client (without `rev`). */
+export async function getPost(userId: string, id: string): Promise<PostView> {
+	const { rev: _rev, ...view } = await readPost(userId, id);
 	return view;
 }
 
@@ -141,8 +159,8 @@ function cleanSettings(p: Platform, input: unknown, fallback: TargetSettings): T
 export async function createPost(userId: string, patch: Patch): Promise<PostView> {
 	const now = Date.now();
 	const id = crypto.randomUUID();
-	await env.DB.prepare('INSERT INTO posts (id, user_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-		.bind(id, userId, 'idea', now, now)
+	await env.DB.prepare('INSERT INTO posts (id, user_id, status, created_at, updated_at, rev) VALUES (?, ?, ?, ?, ?, ?)')
+		.bind(id, userId, 'idea', now, now, newRev())
 		.run();
 	// New posts start as idea; scheduling goes through the same validation as edits.
 	try {
@@ -157,7 +175,7 @@ export async function createPost(userId: string, patch: Patch): Promise<PostView
 }
 
 export async function updatePost(userId: string, id: string, patch: Patch): Promise<PostView> {
-	const post = await getPost(userId, id);
+	const { rev, ...post } = await readPost(userId, id);
 	const rules = editRules(post, post.targets);
 	if (rules.frozen || post.targets.some((t) => t.status === 'publishing')) throw new PostError(FROZEN_MESSAGE, 409);
 
@@ -232,20 +250,23 @@ export async function updatePost(userId: string, id: string, patch: Patch): Prom
 		if (err) throw new PostError(err);
 	}
 
-	// The post update only applies if nobody claimed the post since we read it; target writes
-	// are guarded on the post carrying this edit's timestamp, so they apply only together with it.
-	const guard = 'EXISTS (SELECT 1 FROM posts WHERE id = ? AND updated_at = ?)';
+	// The post update only applies to exactly the version read (`rev`): any claim, status change, media
+	// change or other edit since then replaced it. Target writes are guarded on the post carrying this
+	// edit's own new token, so they apply only together with this edit's post update, never on their own.
+	const token = newRev();
+	const guard = 'EXISTS (SELECT 1 FROM posts WHERE id = ? AND rev = ?)';
 	const statements = [
 		env.DB.prepare(
-			`UPDATE posts SET caption = ?, status = ?, scheduled_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND status = ?
+			`UPDATE posts SET caption = ?, status = ?, scheduled_at = ?, updated_at = ?, rev = ?
+			 WHERE id = ? AND user_id = ? AND status = ? AND rev = ?
 			 AND NOT EXISTS (SELECT 1 FROM post_targets WHERE post_id = ? AND status = 'publishing')`,
-		).bind(next.caption, next.status, next.scheduled_at, now, id, userId, post.status, id),
+		).bind(next.caption, next.status, next.scheduled_at, nextUpdatedAt(post.updated_at), token, id, userId, post.status, rev, id),
 	];
 	if (removed.length) {
 		statements.push(
 			env.DB.prepare(
 				`DELETE FROM post_targets WHERE post_id = ? AND platform IN (${removed.map(() => '?').join(',')}) AND ${guard}`,
-			).bind(id, ...removed, id, now),
+			).bind(id, ...removed, id, token),
 		);
 	}
 	for (const t of writes) {
@@ -270,13 +291,20 @@ export async function updatePost(userId: string, id: string, patch: Patch): Prom
 				t.published_at,
 				t.updated_at,
 				id,
-				now,
+				token,
 			),
 		);
 	}
 	const [claimed] = await env.DB.batch(statements);
-	if (!claimed.meta.changes) throw new PostError(FROZEN_MESSAGE, 409);
+	if (!claimed.meta.changes) throw await conflictError(userId, id);
 	return getPost(userId, id);
+}
+
+/** The 409 for a guarded write that no longer applied: publishing started, or the post changed since it was read. */
+export async function conflictError(userId: string, id: string): Promise<PostError> {
+	const now = await getPost(userId, id);
+	const busy = now.status === 'publishing' || now.targets.some((t) => t.status === 'publishing');
+	return new PostError(busy ? FROZEN_MESSAGE : CHANGED_MESSAGE, 409);
 }
 
 export async function deletePost(userId: string, id: string): Promise<void> {

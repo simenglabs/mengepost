@@ -117,3 +117,13 @@ test('defaultSettings', () => {
 	assert.deepEqual(defaultSettings('x', 'a'), {});
 	assert.equal(defaultSettings('tiktok', 'a').privacy, null);
 });
+
+test('isHttps accepts any letter case of the scheme', async () => {
+	const { isHttps } = await import('./targets.ts');
+	assert.equal(isHttps('https://x.com/a'), true);
+	assert.equal(isHttps('HTTPS://x.com/a'), true);
+	assert.equal(isHttps('Https://x.com/a'), true);
+	assert.equal(isHttps('http://x.com/a'), false);
+	assert.equal(isHttps('javascript:alert(1)'), false);
+	assert.equal(isHttps(''), false);
+});

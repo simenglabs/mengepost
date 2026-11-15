@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { platformLabel, type Platform } from '#lib/platforms.ts';
 	import type { PostView } from '#lib/posts.ts';
-	import type { TargetStatus } from '#lib/targets.ts';
+	import { isHttps, type TargetStatus } from '#lib/targets.ts';
 
 	let {
 		post,
@@ -31,7 +31,7 @@
 	let urls = $state<Partial<Record<Platform, string>>>({});
 	const badUrl = (p: Platform) => {
 		const u = urls[p]?.trim();
-		return !!u && !u.startsWith('https://');
+		return !!u && !isHttps(u);
 	};
 	const retryable = $derived(failed.filter((t) => !blocked[t.platform]));
 </script>
