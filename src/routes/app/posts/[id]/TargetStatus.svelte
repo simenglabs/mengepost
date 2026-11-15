@@ -8,11 +8,14 @@
 		onretry,
 		onresolve,
 		disabled = false,
+		blocked = {},
 	}: {
 		post: PostView;
 		onretry: (platforms?: Platform[]) => void;
 		onresolve: (platform: Platform, outcome: 'published' | 'retry', url?: string) => void;
 		disabled?: boolean;
+		/** Failed platforms that cannot be retried yet, with the reason. */
+		blocked?: Partial<Record<Platform, string>>;
 	} = $props();
 
 	const BADGE: Record<TargetStatus, [string, string]> = {
@@ -26,6 +29,11 @@
 	const canRetry = $derived(post.status === 'failed');
 	const failed = $derived(post.targets.filter((t) => t.status === 'failed'));
 	let urls = $state<Partial<Record<Platform, string>>>({});
+	const badUrl = (p: Platform) => {
+		const u = urls[p]?.trim();
+		return !!u && !u.startsWith('https://');
+	};
+	const retryable = $derived(failed.filter((t) => !blocked[t.platform]));
 </script>
 
 <ul class="targets">
@@ -48,9 +56,12 @@
 						<button
 							type="button"
 							class="btn sm"
-							{disabled}
+							disabled={disabled || !!blocked[t.platform]}
 							onclick={() => onretry([t.platform])}>Retry</button
 						>
+						{#if blocked[t.platform]}<small class="blocked"
+								>{blocked[t.platform]}</small
+							>{/if}
 					</div>
 				{/if}
 			{:else if t.status === 'unknown'}
@@ -69,7 +80,7 @@
 					<button
 						type="button"
 						class="btn sm"
-						{disabled}
+						disabled={disabled || badUrl(t.platform)}
 						onclick={() =>
 							onresolve(t.platform, 'published', urls[t.platform]?.trim() || undefined)}
 						>It's posted</button
@@ -82,6 +93,9 @@
 						>Not posted — try again</button
 					>
 				</div>
+				{#if badUrl(t.platform)}<small class="blocked"
+						>Use a link that starts with https://</small
+					>{/if}
 			{/if}
 		</li>
 	{/each}
@@ -90,7 +104,7 @@
 	<button
 		type="button"
 		class="btn sm primary"
-		{disabled}
+		disabled={disabled || retryable.length < failed.length}
 		onclick={() => onretry()}>Retry all failed</button
 	>
 {/if}
@@ -124,6 +138,10 @@
 		margin: 0;
 		font-size: 13px;
 		color: var(--muted);
+	}
+	.blocked {
+		font-size: 12px;
+		color: var(--danger);
 	}
 	.input.sm {
 		flex: 1 1 200px;

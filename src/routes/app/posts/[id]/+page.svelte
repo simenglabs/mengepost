@@ -235,6 +235,16 @@
 		return null;
 	});
 	const readyToPost = $derived(!firstIssue);
+	/** Failed platforms whose current settings would fail again; their Retry stays off until fixed. */
+	const blocked = $derived.by(() => {
+		const out: Partial<Record<Platform, string>> = {};
+		for (const t of post?.targets ?? []) {
+			if (t.status !== 'failed') continue;
+			const msg = issueFor(t.platform);
+			if (msg) out[t.platform] = msg;
+		}
+		return out;
+	});
 	const scheduleInPast = $derived(
 		nextStatus === 'scheduled' && new Date(when).getTime() < Date.now(),
 	);
@@ -523,7 +533,7 @@
 				<p class="muted">
 					Each platform is processing your post. This page updates automatically.
 				</p>
-				<TargetStatus {post} onretry={retry} onresolve={resolve} disabled={busy} />
+				<TargetStatus {post} onretry={retry} onresolve={resolve} disabled={busy} {blocked} />
 			</div>
 		{:else}
 			<div class="done"><Icon name="check" size={28} /></div>
@@ -533,7 +543,7 @@
 					Posted {post.published_at ? fmt(post.published_at) : ''}. Media files
 					were removed from {site.name} storage after publishing.
 				</p>
-				<TargetStatus {post} onretry={retry} onresolve={resolve} disabled={busy} />
+				<TargetStatus {post} onretry={retry} onresolve={resolve} disabled={busy} {blocked} />
 				<p class="caption">{post.caption || 'No caption'}</p>
 			</div>
 		{/if}
@@ -542,7 +552,7 @@
 	{#if post && showTargets}
 		<section class="card targets-card">
 			<h2>Where it went</h2>
-			<TargetStatus {post} onretry={retry} onresolve={resolve} disabled={busy} />
+			<TargetStatus {post} onretry={retry} onresolve={resolve} disabled={busy} {blocked} />
 		</section>
 	{/if}
 	{#if contentLocked}

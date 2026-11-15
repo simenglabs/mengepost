@@ -31,8 +31,12 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		try {
 			creator = await creatorInfo(await accessToken(userId));
 		} catch (e) {
-			if (!(e instanceof TikTokError)) throw e;
-			creatorError = e.message;
+			// Any TikTok-side problem (token, network, storage) only affects the TikTok panel.
+			if (e instanceof TikTokError) creatorError = e.message;
+			else {
+				console.error('creatorInfo', e);
+				creatorError = "Couldn't reach TikTok. Try again later.";
+			}
 		}
 	}
 
