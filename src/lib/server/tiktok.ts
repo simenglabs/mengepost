@@ -151,20 +151,32 @@ async function upload({ userId, caption, media, settings }: PublishInput) {
 		source_info: { source: 'FILE_UPLOAD', video_size: size, chunk_size, total_chunk_count }
 	});
 
-	// A failed chunk upload stays 'failed': TikTok does not publish incomplete uploads.
+	// From here TikTok knows the publish_id. A rejected chunk (4xx) is a definite failure. A 5xx or a
+	// network error leaves the outcome open, so the status poll decides: TikTok reports incomplete
+	// uploads as FAILED and never publishes them.
 	for (let i = 0; i < total_chunk_count; i++) {
 		const start = i * chunk_size;
 		const end = i === total_chunk_count - 1 ? size : start + chunk_size;
 		const part = await mediaObject(video, { offset: start, length: end - start });
 		if (!part) fail('no_video', 'The video file is missing. Upload it again.');
-		const res = await fetch(init.upload_url, {
-			method: 'PUT',
-			headers: {
-				'Content-Type': video.type || 'video/mp4',
-				'Content-Range': `bytes ${start}-${end - 1}/${size}`
-			},
-			body: await part!.arrayBuffer()
-		});
+		let res: Response;
+		try {
+			res = await fetch(init.upload_url, {
+				method: 'PUT',
+				headers: {
+					'Content-Type': video.type || 'video/mp4',
+					'Content-Range': `bytes ${start}-${end - 1}/${size}`
+				},
+				body: await part!.arrayBuffer()
+			});
+		} catch (e) {
+			console.error('chunk upload: no response, leaving it to the status poll', init.publish_id, i, e);
+			return init.publish_id;
+		}
+		if (res.status >= 500) {
+			console.error('chunk upload: server error, leaving it to the status poll', init.publish_id, i, res.status, await res.text().catch(() => ''));
+			return init.publish_id;
+		}
 		if (!res.ok) {
 			console.error('chunk upload', i, res.status, await res.text());
 			fail('upload_failed', 'Uploading the video to TikTok failed. Try again.');
