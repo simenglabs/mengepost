@@ -22,6 +22,8 @@ export const CAPS: Record<Platform, Caps> = {
 	x: { available: false, kinds: ['text', 'image', 'video'], maxImages: 4, maxCaption: 280 }
 };
 
+const YOUTUBE_MAX_DESCRIPTION_BYTES = 5000;
+
 export function contentKind(media: Media): ContentKind {
 	if (media.length === 0) return 'text';
 	return media[0].kind === 'video' ? 'video' : 'image';
@@ -42,6 +44,13 @@ export function platformIssue(p: Platform, ctx: { media: Media; caption: string 
 	}
 	const images = ctx.media.filter((m) => m.kind === 'image').length;
 	if (images > caps.maxImages && kind === 'image') return `${label} allows up to ${caps.maxImages} images.`;
+	if (p === 'youtube') {
+		// The YouTube Data API rejects descriptions with < or > and measures the limit in UTF-8 bytes.
+		if (/[<>]/.test(ctx.caption)) return "YouTube descriptions can't contain < or >.";
+		if (new TextEncoder().encode(ctx.caption).length > YOUTUBE_MAX_DESCRIPTION_BYTES)
+			return `YouTube descriptions can be up to ${YOUTUBE_MAX_DESCRIPTION_BYTES} bytes.`;
+		return null;
+	}
 	if (ctx.caption.length > caps.maxCaption) return `${label} captions can be up to ${caps.maxCaption} characters.`;
 	return null;
 }

@@ -28,6 +28,20 @@ test('platformIssue', () => {
 	// Review Focus 5: a long main caption does not matter when the effective (override) caption is short.
 	assert.equal(platformIssue('tiktok', { media: vid, caption: effectiveCaption('x'.repeat(5000), 'short') }), null);
 });
+test('platformIssue: YouTube description rules', () => {
+	assert.equal(platformIssue('youtube', { media: vid, caption: 'a < b' }), "YouTube descriptions can't contain < or >.");
+	assert.equal(platformIssue('youtube', { media: vid, caption: 'see -> here' }), "YouTube descriptions can't contain < or >.");
+	// The limit is 5000 UTF-8 bytes, not characters.
+	assert.equal(platformIssue('youtube', { media: vid, caption: 'x'.repeat(5000) }), null);
+	assert.equal(platformIssue('youtube', { media: vid, caption: 'x'.repeat(5001) }), 'YouTube descriptions can be up to 5000 bytes.');
+	assert.equal(platformIssue('youtube', { media: vid, caption: 'é'.repeat(2500) }), null); // 2 bytes each = 5000
+	assert.equal(platformIssue('youtube', { media: vid, caption: 'é'.repeat(2501) }), 'YouTube descriptions can be up to 5000 bytes.');
+	assert.equal(platformIssue('youtube', { media: vid, caption: '😀'.repeat(1251) }), 'YouTube descriptions can be up to 5000 bytes.'); // 4 bytes each
+	// Effective caption: a YouTube override without < > is fine even if the main caption has them.
+	assert.equal(platformIssue('youtube', { media: vid, caption: effectiveCaption('a<b', 'clean') }), null);
+	// TikTok keeps its own rules: < and > are allowed there.
+	assert.equal(platformIssue('tiktok', { media: vid, caption: 'a < b' }), null);
+});
 test('defaultYouTubeTitle', () => {
 	assert.equal(defaultYouTubeTitle('First line\nsecond'), 'First line');
 	assert.equal(defaultYouTubeTitle('a'.repeat(150)), 'a'.repeat(100));

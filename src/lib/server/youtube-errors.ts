@@ -31,7 +31,9 @@ export type PollOutcome = { state: 'processing' } | { state: 'published'; url: s
 /** Maps a videos.list?part=status response to a poll result. */
 export function classifyPoll(id: string, body: any): PollOutcome {
 	const status = body?.items?.[0]?.status;
-	if (!status) return { state: 'failed', reason: 'YouTube removed this video.' };
+	// Missing from videos.list is not proof of failure (it can lag right after upload); keep polling,
+	// and the target turns into "needs checking" once processing has taken too long.
+	if (!status) return { state: 'processing' };
 	switch (status.uploadStatus) {
 		case 'processed':
 			return { state: 'published', url: `https://www.youtube.com/watch?v=${id}` };

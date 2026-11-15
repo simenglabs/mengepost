@@ -27,5 +27,6 @@ test('poll classification', () => {
 	assert.deepEqual(classifyPoll('abc', item({ uploadStatus: 'rejected', rejectionReason: 'duplicate' })), { state: 'failed', reason: 'duplicate' });
 	assert.deepEqual(classifyPoll('abc', item({ uploadStatus: 'failed', failureReason: 'codec' })), { state: 'failed', reason: 'codec' });
 	assert.equal(classifyPoll('abc', item({ uploadStatus: 'deleted' })).state, 'failed');
-	assert.deepEqual(classifyPoll('abc', { items: [] }), { state: 'failed', reason: 'YouTube removed this video.' });
+	assert.deepEqual(classifyPoll('abc', { items: [] }), { state: 'processing' });
+	assert.deepEqual(classifyPoll('abc', {}), { state: 'processing' });
 });
