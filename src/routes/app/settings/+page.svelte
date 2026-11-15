@@ -6,6 +6,7 @@
 	import ConfirmDialog from '#lib/ui/ConfirmDialog.svelte';
 	import { site } from '#lib';
 	import Icon from '#lib/Icon.svelte';
+	import { platformLabel, type Platform } from '#lib/platforms.ts';
 	import type { PageProps } from './$types';
 
 	let { data, form }: PageProps = $props();
@@ -30,6 +31,11 @@
 		};
 	};
 
+	const soon: { platform: Platform; text: string }[] = [
+		{ platform: 'instagram', text: 'Share photos, carousels and Reels. Business and Creator accounts only.' },
+		{ platform: 'threads', text: 'Post short text updates, images and video to Threads.' },
+		{ platform: 'x', text: 'Publish text, images and video to X.' }
+	];
 	const msg = (section: string) => (form?.section === section ? form : null);
 	const tiktokOk = $derived(
 		page.url.searchParams.get('tiktok') === 'connected',
@@ -94,9 +100,9 @@
 			</div>
 			<p class="muted small">
 				{site.name} can publish videos to this account, including scheduled posts.
-				The connection stays valid until
-				{date(data.account.refresh_expires_at)}; reconnect before then to keep
-				scheduling.
+				{#if data.account.refresh_expires_at}The connection stays valid until
+					{date(data.account.refresh_expires_at)}; reconnect before then to keep
+					scheduling.{/if}
 			</p>
 			<div class="actions">
 				<a href="/app/settings/tiktok" class="btn" data-sveltekit-reload
@@ -204,6 +210,16 @@
 			>
 		{/if}
 	</section>
+
+	{#each soon as s (s.platform)}
+		<section class="card soon" id={s.platform} hidden={tab !== 'connections'}>
+			<div class="card-head">
+				<h2 class="card-title">{platformLabel[s.platform]}</h2>
+				<span class="pill">Coming soon</span>
+			</div>
+			<p class="muted small">{s.text}</p>
+		</section>
+	{/each}
 
 	<section class="card" hidden={tab !== 'profile'}>
 		<div class="card-head"><h2 class="card-title">Profile</h2></div>

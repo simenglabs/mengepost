@@ -1,3 +1,4 @@
+import { postSummary } from '#lib/posts.ts';
 import { listPosts } from '#lib/server/posts.ts';
 import type { PageServerLoad } from './$types';
 
@@ -33,7 +34,19 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.filter((p) => p.status === 'scheduled' && (p.scheduled_at ?? 0) >= now - 60_000)
 			.sort((a, b) => a.scheduled_at! - b.scheduled_at!)
 			.slice(0, 4),
-		attention: posts.filter((p) => p.status === 'failed' || (p.status === 'draft' && p.media.length === 0)).slice(0, 4),
+		attention: posts
+			.filter((p) => p.status === 'failed' || (p.status === 'draft' && p.media.length === 0))
+			.slice(0, 4)
+			.map((p) => ({
+				id: p.id,
+				caption: p.caption,
+				status: p.status,
+				reason:
+					p.status === 'failed'
+						? [postSummary(p), p.targets.find((t) => t.status === 'failed')?.fail_reason].filter(Boolean).join(' · ') ||
+							'Publishing failed. Open to review and try again.'
+						: 'Draft waiting for media.'
+			})),
 		recent: posts.slice(0, 5),
 		weeks
 	};

@@ -19,8 +19,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					created_at: number;
 				}>()).results
 			: [];
-	return { // TikTok refresh tokens always expire; the null case is only for other platforms. Task 9 reworks this UI.
-		account: connections.tiktok ? { ...connections.tiktok, refresh_expires_at: connections.tiktok.refresh_expires_at ?? 0 } : null, youtube: connections.youtube ?? null, team };
+	return { account: connections.tiktok ?? null, youtube: connections.youtube ?? null, team };
 };
 
 const isUnique = (e: unknown) => e instanceof Error && e.message.includes('UNIQUE');

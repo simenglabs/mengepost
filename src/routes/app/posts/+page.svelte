@@ -5,6 +5,8 @@
 	import PageHeader from '#lib/ui/PageHeader.svelte';
 	import EmptyState from '#lib/ui/EmptyState.svelte';
 	import { statusLabel, title, type Status } from '#lib/posts.ts';
+	import { contentKind } from '#lib/platforms.ts';
+	import PlatformBadge from '#lib/ui/PlatformBadge.svelte';
 	import type { PageProps } from './$types';
 	let { data }: PageProps = $props();
 	let search = $state('');
@@ -86,15 +88,17 @@
 			><div class="post-title">
 				<span class="post-thumb {p.status}"
 					><Icon
-						name={p.video_key ? 'video' : p.status === 'idea' ? 'bulb' : 'edit'}
+						name={contentKind(p.media) === 'video'
+							? 'video'
+							: p.status === 'idea'
+								? 'bulb'
+								: 'edit'}
 						size={21}
 					/></span
 				><span
 					><strong>{title(p)}</strong><small
-						>{p.video_name ??
-							(p.status === 'idea'
-								? 'An idea worth keeping'
-								: 'TikTok post')}{#if p.scheduled_at}
+						>{p.media[0]?.name ??
+							(p.status === 'idea' ? 'An idea worth keeping' : 'Text post')}{#if p.scheduled_at}
 							· {new Date(p.scheduled_at).toLocaleString(undefined, {
 								month: 'short',
 								day: 'numeric',
@@ -104,7 +108,16 @@
 					></span
 				>
 			</div>
-			<span class="pill {p.status}">{statusLabel[p.status]}</span><span
+			<span class="status-cell"
+				><span class="pill {p.status}">{statusLabel[p.status]}</span><span
+					class="badges"
+					>{#each p.targets as t (t.platform)}<PlatformBadge
+							platform={t.platform}
+							status={t.status}
+							size={20}
+						/>{/each}</span
+				></span
+			><span
 				class="updated">{date(p.updated_at)}</span
 			><Icon name="right" size={16} /></a
 		>{:else}<EmptyState
@@ -202,7 +215,7 @@
 	.list-head,
 	.post-row {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) 110px 120px 20px;
+		grid-template-columns: minmax(0, 1fr) 130px 120px 20px;
 		align-items: center;
 		gap: 18px;
 	}
@@ -260,8 +273,15 @@
 		background: var(--lavender);
 		color: #9885ab;
 	}
-	.post-row .pill {
-		justify-self: start;
+	.status-cell {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		align-items: flex-start;
+	}
+	.badges {
+		display: flex;
+		gap: 5px;
 	}
 	.updated {
 		color: var(--muted);

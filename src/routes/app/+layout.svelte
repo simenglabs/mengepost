@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import Brand from '#lib/ui/Brand.svelte';
 	import Icon, { type IconName } from '#lib/Icon.svelte';
+	import { PLATFORMS, platformLabel } from '#lib/platforms.ts';
 	import type { LayoutProps } from './$types';
 	let { children, data }: LayoutProps = $props();
 	let menuOpen = $state(false);
@@ -26,6 +27,7 @@
 					? 'Post editor'
 					: (nav.find((n) => active(n.href))?.label ?? 'Workspace'),
 	);
+	const connected = $derived(PLATFORMS.filter((p) => data.connections[p]));
 	const initials = (name: string) =>
 		name
 			.split(/\s+/)
@@ -81,13 +83,19 @@
 			<Icon name="leaf" size={20} />
 			<p>A little planning.<br /><strong>More room to create.</strong></p>
 		</div>
-		<a class="connection" href="/app/settings#tiktok"
+		<a class="connection" href="/app/settings#connections"
 			><span class="connection-icon"><Icon name="link" size={16} /></span><span
-				><strong>{data.tiktok ? 'TikTok connected' : 'Connect TikTok'}</strong
+				><strong
+					>{connected.length
+						? `${connected.length} of ${PLATFORMS.length} connected`
+						: 'Connect an account'}</strong
 				><small
-					>{data.tiktok?.display_name ?? 'Make your next post happen'}</small
+					>{connected.length
+						? connected.map((p) => platformLabel[p]).join(', ')
+						: 'Make your next post happen'}</small
 				></span
-			><span class:connected={!!data.tiktok} class="connection-dot"></span></a
+			><span class:connected={connected.length > 0} class="connection-dot"
+			></span></a
 		>
 		<a
 			class="settings-link"

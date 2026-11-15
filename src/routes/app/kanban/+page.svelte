@@ -6,18 +6,20 @@
 	import {
 		COLUMNS,
 		LOCKED,
-		privacyLabel,
+		postSummary,
 		statusLabel,
 		title,
-		type Post,
+		type PostView,
 		type Status,
 	} from '#lib/posts.ts';
+	import { readinessError } from '#lib/targets.ts';
+	import PlatformBadge from '#lib/ui/PlatformBadge.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
 	// Local copy so drags update instantly; resynced whenever server data changes.
-	let posts = $state<Post[]>([]);
+	let posts = $state<PostView[]>([]);
 	$effect(() => {
 		posts = data.posts.map((p) => ({ ...p }));
 	});
@@ -46,12 +48,16 @@
 			moving
 		)
 			return;
+		if (status === 'scheduled') {
+			const issue = readinessError(post);
+			if (issue) {
+				error = issue;
+				return;
+			}
+		}
 		if (
 			status === 'scheduled' &&
-			(!post.video_key ||
-				!post.privacy ||
-				!post.scheduled_at ||
-				post.scheduled_at < Date.now())
+			(!post.scheduled_at || post.scheduled_at < Date.now())
 		) {
 			await goto(`/app/posts/${id}?schedule=1&from=board`);
 			return;
@@ -104,7 +110,7 @@
 		}
 	}
 
-	const when = (p: Post) =>
+	const when = (p: PostView) =>
 		new Date(
 			(p.status === 'published' ? p.published_at : p.scheduled_at)!,
 		).toLocaleString(undefined, {
@@ -191,19 +197,19 @@
 								{#if p.status !== col.key}<span class="pill {p.status}"
 										>{statusLabel[p.status]}</span
 									>{/if}
-								{#if p.video_key || p.video_name}<span class="tag"
-										><Icon name="video" size={14} /> Video</span
-									>{/if}
-								{#if p.privacy}<span class="tag">{privacyLabel[p.privacy]}</span
-									>{/if}
+								{#each p.targets as t (t.platform)}<PlatformBadge
+										platform={t.platform}
+										status={t.status}
+										size={20}
+									/>{/each}
 							</span>
 							{#if p.scheduled_at || p.published_at}
 								<span class="when"
 									><Icon name="clock" size={14} /> {when(p)}</span
 								>
 							{/if}
-							{#if p.status === 'failed' && p.fail_reason}<span class="reason"
-									>{p.fail_reason}</span
+							{#if postSummary(p)}<span class="reason" class:ok={p.status !== 'failed'}
+									>{postSummary(p)}</span
 								>{/if}
 						</a>
 						{#if !LOCKED.includes(p.status)}<select
@@ -360,6 +366,9 @@
 	.reason {
 		font-size: 12px;
 		color: var(--danger);
+	}
+	.reason.ok {
+		color: var(--muted);
 	}
 	.empty {
 		padding: 18px;

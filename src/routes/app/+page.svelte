@@ -4,6 +4,7 @@
 	import PageHeader from '#lib/ui/PageHeader.svelte';
 	import EmptyState from '#lib/ui/EmptyState.svelte';
 	import { statusLabel, title } from '#lib/posts.ts';
+	import { contentKind } from '#lib/platforms.ts';
 	import type { PageProps } from './$types';
 	let { data }: PageProps = $props();
 	const fmt = (ms: number) =>
@@ -127,7 +128,7 @@
 				class="link-row"
 				href="/app/posts/{p.id}?from=overview"
 				><span class="post-icon {p.status}"
-					><Icon name={p.video_key ? 'video' : 'edit'} size={17} /></span
+					><Icon name={contentKind(p.media) === 'video' ? 'video' : 'edit'} size={17} /></span
 				><span class="grow"
 					><strong>{title(p)}</strong><small>Updated {fmt(p.updated_at)}</small
 					></span
@@ -184,22 +185,19 @@
 				href="/app/posts/{p.id}?from=overview"
 				><Icon name="alert" size={17} /><span class="grow"
 					><strong>{title(p)}</strong><small
-						>{p.status === 'failed'
-							? p.fail_reason ||
-								'Publishing failed. Open to review and try again.'
-							: 'Draft waiting for a video.'}</small
+						>{p.reason}</small
 					></span
 				><Icon name="right" size={16} /></a
 			>{/each}
 	</section>{/if}
-{#if !data.tiktok}<div class="connect-strip glass">
+{#if Object.keys(data.connections).length === 0}<div class="connect-strip glass">
 		<span class="connect-symbol"><Icon name="link" size={20} /></span>
 		<div>
-			<strong>Your workspace is ready. Bring TikTok along.</strong>
-			<p>Connect your account to schedule and publish your videos.</p>
+			<strong>Your workspace is ready. Bring your accounts along.</strong>
+			<p>Connect your accounts to schedule and publish your posts.</p>
 		</div>
-		<a href="/app/settings#tiktok" class="btn sm"
-			>Connect TikTok<Icon name="arrow" size={14} /></a
+		<a href="/app/settings#connections" class="btn sm"
+			>Connect accounts<Icon name="arrow" size={14} /></a
 		>
 	</div>{/if}
 

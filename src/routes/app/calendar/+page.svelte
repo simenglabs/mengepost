@@ -4,7 +4,8 @@
 	import Icon from '#lib/Icon.svelte';
 	import PageHeader from '#lib/ui/PageHeader.svelte';
 	import EmptyState from '#lib/ui/EmptyState.svelte';
-	import { statusLabel, title, type Post } from '#lib/posts.ts';
+	import { statusLabel, title, type PostView as Post } from '#lib/posts.ts';
+	import PlatformBadge from '#lib/ui/PlatformBadge.svelte';
 	import type { PageProps } from './$types';
 	let { data }: PageProps = $props();
 	let view = $state('month');
@@ -133,7 +134,10 @@
 							class="chip {p.status}"
 							href="/app/posts/{p.id}?from=calendar"
 							title={`${statusLabel[p.status]} · ${title(p)}`}
-							><b>{time(p)}</b><span>{title(p)}</span></a
+							><b>{time(p)}</b>{#each p.targets as t (t.platform)}<PlatformBadge
+								platform={t.platform}
+								size={14}
+							/>{/each}<span>{title(p)}</span></a
 						>{/each}{#if items.length > 3}<button
 							class="more-posts"
 							onclick={() => (selected = key)}>+{items.length - 3} more</button
