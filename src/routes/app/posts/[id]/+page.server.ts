@@ -1,5 +1,7 @@
 import { error } from '@sveltejs/kit';
+import type { Platform } from '#lib/platforms.ts';
 import type { CreatorInfo, PostView } from '#lib/posts.ts';
+import { listConnections } from '#lib/server/accounts.ts';
 import { getPost, PostError } from '#lib/server/posts.ts';
 import { accessToken, creatorInfo, TikTokError } from '#lib/server/tiktok.ts';
 import type { PageServerLoad } from './$types';
@@ -16,19 +18,28 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 		}
 	}
 
+	const all = await listConnections(userId);
+	const connections: Partial<Record<Platform, { display_name: string; avatar_url: string }>> = {};
+	for (const [platform, c] of Object.entries(all) as [Platform, (typeof all)[Platform]][])
+		if (c) connections[platform] = { display_name: c.display_name, avatar_url: c.avatar_url };
+
 	// TikTok requires showing the creator's current options before posting.
+	// Only asked when TikTok is connected, so the editor still opens without it.
 	let creator: CreatorInfo | null = null;
 	let creatorError: string | null = null;
-	try {
-		creator = await creatorInfo(await accessToken(userId));
-	} catch (e) {
-		if (!(e instanceof TikTokError)) throw e;
-		creatorError = e.message;
+	if (connections.tiktok) {
+		try {
+			creator = await creatorInfo(await accessToken(userId));
+		} catch (e) {
+			if (!(e instanceof TikTokError)) throw e;
+			creatorError = e.message;
+		}
 	}
 
 	return {
 		post,
 		from: url.searchParams.get('from'),
+		connections,
 		creator,
 		creatorError,
 		date: url.searchParams.get('date'),

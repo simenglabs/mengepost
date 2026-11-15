@@ -122,12 +122,13 @@ export async function reorderMedia(userId: string, postId: string, ids: string[]
 	return getPost(userId, postId);
 }
 
-/** Streams one media file back to the post's owner, or null when it does not exist. */
+/** Streams one media file (or the byte range asked for in `range`) back to the post's owner, or null when it does not exist. */
 export async function openMedia(
 	userId: string,
 	postId: string,
 	mediaId: string,
-): Promise<{ media: Media; body: ReadableStream; size: number } | null> {
+	range?: Headers,
+): Promise<{ media: Media; body: ReadableStream; size: number; range?: R2Range } | null> {
 	const post = await getPost(userId, postId).catch((e) => {
 		if (e instanceof PostError) return null;
 		throw e;
@@ -137,10 +138,13 @@ export async function openMedia(
 		.bind(mediaId, postId)
 		.first<MediaRow>();
 	if (!row) return null;
-	const obj = await mediaObject(row);
+	// R2 reads the Range header itself; an unreadable range falls back to the whole file.
+	const obj = range?.has('range')
+		? await env.MEDIA.get(row.r2_key, { range }).catch(() => mediaObject(row))
+		: await mediaObject(row);
 	if (!obj) return null;
 	const { r2_key: _key, created_at: _created, ...media } = row as MediaRow & { created_at?: number };
-	return { media, body: obj.body, size: obj.size };
+	return { media, body: obj.body, size: obj.size, range: obj.range };
 }
 
 /** Removes every media file of a post from R2 and the database. */
